@@ -1,0 +1,803 @@
+# =============================================================================
+# MLRun CE - Production Values Override
+# Namespace: aib-system (main components)
+# Minio & Kafka: DISABLED here - installed separately in namespace "aib-data"
+# Service type: ClusterIP only (no NodePort, no LoadBalancer)
+# =============================================================================
+
+global:
+
+  # The external hostname or IP used to construct URLs for browser access.
+  # In production with ClusterIP services, this is mainly used by configmap templates
+  # (e.g. MLRUN_GRAFANA_URL). Since we use ClusterIP + ingress/port-forward, the actual
+  # browser access is handled externally.
+  # Options: an IP address, a DNS hostname, or "localhost" for local/dev setups.
+  externalHostAddress: localhost
+
+  registry:
+    # Container registry where Nuclio builds and pushes function images.
+    # Must be accessible from the cluster nodes for image pulls.
+    #
+    # GCP Artifact Registry format:
+    #   <region>-docker.pkg.dev/<project-id>/<repository-name>
+    #   Example: us-central1-docker.pkg.dev/my-gcp-project/mlrun-functions
+    #
+    # Other examples:
+    #   "docker.io/myorg", "ghcr.io/myorg",
+    #   "123456.dkr.ecr.us-east-1.amazonaws.com/myrepo"
+    #
+    # TODO: replace with your GCP Artifact Registry URL
+    url: "us-central1-docker.pkg.dev/YOUR_PROJECT_ID/mlrun-functions"
+
+    # Name of a Kubernetes docker-registry secret for pulling/pushing images.
+    #
+    # For GCP Artifact Registry, use one of:
+    #   1. Workload Identity (recommended for GKE) - set secretName to "" and configure
+    #      Workload Identity on the Nuclio and function service accounts.
+    #   2. Service account JSON key - create a secret from a GCP SA key file:
+    #      kubectl create secret docker-registry gcr-registry-credentials \
+    #        --docker-server=us-central1-docker.pkg.dev \
+    #        --docker-username=_json_key \
+    #        --docker-password="$(cat sa-key.json)" \
+    #        --namespace aib-system
+    #
+    # For other registries:
+    #   Create with: kubectl create secret docker-registry <name> --docker-server=... --docker-username=... --docker-password=...
+    #   Leave empty if using node-level credentials (IAM roles, Workload Identity).
+    secretName: "gcr-registry-credentials"
+
+  nuclio:
+    dashboard:
+      # Nuclio dashboard nodePort - set to 0 because we use ClusterIP.
+      # Only used when nuclio dashboard service type is NodePort (default: 30050).
+      nodePort: 0
+
+  infrastructure:
+    # Defines the deployment flavour. Affects how URLs, ingress, and storage are configured.
+    # Options: "standalone" (cloud-agnostic, no provider assumptions),
+    #          "onprem", "aws", "azure", "gcp"
+    # "standalone" is chosen for cloud-agnostic compatibility across any provider.
+    kind: standalone
+
+    # Kubernetes distribution flavour. Used for provider-specific logic (e.g. ingress annotations).
+    # Options: "eks", "aks", "gke", "kubespray", "openshift", "rancher", "minikube", or ~ (null/none)
+    # Set to null since we target any provider.
+    provider: ~
+
+    # CIDR ranges allowed for inbound traffic to load balancers.
+    # Not used with ClusterIP services. Only relevant when using LoadBalancer type.
+    inboundCidrs: ~
+
+    # Name for cloud-provider load balancers. Not used with ClusterIP services.
+    loadBalancerName: ~
+
+    aws:
+      # S3 bucket name for artifact storage. Used in configmap templates to build
+      # MLRUN_ARTIFACT_PATH and MLRUN_FEATURE_STORE__DATA_PREFIXES__DEFAULT.
+      # Even with non-AWS setups, this value is used because MinIO is S3-compatible.
+      bucketName: mlrun
+
+      # When false: MLRun uses explicit credentials (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
+      #   from minio.rootUser/rootPassword. This is the correct setting for MinIO.
+      # When true: MLRun relies on IAM roles / instance profiles for S3 access (no explicit keys).
+      #   Use this only with real AWS S3 and IAM-based authentication.
+      s3NonAnonymous: false
+
+      # ARN of an ACM certificate for AWS ALB ingress TLS termination.
+      # Only used when infrastructure.kind is "aws". Not relevant here.
+      domainNameCertificate: ~
+
+# =============================================================================
+# Nuclio - Serverless Functions
+# Deploys in aib-system, runs functions in aib-serving namespace.
+# Provides real-time serving, ETL, and event-driven function execution.
+# =============================================================================
+nuclio:
+
+  # Override the release-name-based naming. Ensures stable service names
+  # (e.g. "nuclio" instead of "mlrun-ce-nuclio") for cross-component references.
+  fullnameOverride: nuclio
+
+  controller:
+    # The controller watches Nuclio Function CRDs and reconciles desired state
+    # (deploy, update, scale, delete functions).
+    # Must be enabled - it is the core runtime of Nuclio.
+    enabled: true
+
+  dashboard:
+    # Nuclio's management API and optional web UI. MLRun API uses it to deploy serving functions.
+    # Disable only if managing Nuclio functions exclusively via kubectl/CRDs.
+    enabled: true
+
+    # How function container images are built inside the cluster.
+    # Options: "kaniko" (rootless, builds in-cluster using Kaniko pods - recommended),
+    #          "docker" (requires Docker socket - deprecated since k8s v1.20+)
+    containerBuilderKind: kaniko
+
+    ingress:
+      # Whether to create an Ingress resource for the Nuclio dashboard.
+      # Disabled because we use ClusterIP + port-forward or a separate ingress controller.
+      enabled: false
+
+    securityContext:
+      # Run dashboard as non-root for security hardening.
+      # Required by many production PSPs/PSAs and OPA/Gatekeeper policies.
+      runAsNonRoot: true
+      runAsUser: 1000
+
+  autoscaler:
+    # Nuclio's built-in function autoscaler. Scales functions based on custom metrics.
+    # Disabled here - enable if you need scale-to-zero or metric-based autoscaling.
+    # Alternative: use Kubernetes HPA on the function deployments directly.
+    enabled: false
+
+  dlx:
+    # DLX (Delayed Load Executor) works with the autoscaler to handle scale-from-zero.
+    # When a request hits a scaled-to-zero function, DLX buffers it, triggers scale-up,
+    # then forwards. Only useful when autoscaler is also enabled.
+    enabled: false
+
+  rbac:
+    # Create RBAC roles and bindings for Nuclio's controller and dashboard.
+    # Must be true unless your cluster has pre-provisioned Nuclio RBAC.
+    create: true
+
+    # Controls which namespaces Nuclio watches for Function CRDs.
+    # Options: "namespaced" (only watches the release namespace + functionNamespace - more secure),
+    #          "cluster" (watches all namespaces - use if functions span many namespaces)
+    # "namespaced" is recommended for production to limit blast radius.
+    crdAccessMode: namespaced
+
+  crd:
+    # Install Nuclio CRDs (NuclioFunction, NuclioProject, NuclioFunctionEvent).
+    # Set to false only if CRDs are managed externally (e.g. by a cluster admin or ArgoCD).
+    create: true
+
+  # Target namespace where Nuclio deploys serverless function pods.
+  # Separating functions from the control plane (aib-system) provides:
+  # - Isolation: function crashes don't affect platform services
+  # - RBAC: different permissions for platform vs. serving workloads
+  # - Resource quotas: independently limit function resource consumption
+  # The namespace must exist before deployment.
+  functionNamespace: aib-serving
+
+  platform:
+    logger:
+      sinks:
+        myStdoutLoggerSink:
+          # Logger output format.
+          # Options: "stdout" (console), "file" (log files)
+          kind: stdout
+          attributes:
+            # Log encoding format.
+            # Options: "console" (human-readable), "json" (structured, better for log aggregation)
+            encoding: console
+            timeFieldName: time
+            timeFieldEncoding: iso8601
+      # System-level log config (controller, dashboard).
+      # Options for level: "debug", "info", "warn", "error"
+      # Use "info" in production if debug logs are too verbose.
+      system:
+        - level: debug
+          sink: myStdoutLoggerSink
+      # Function-level log config (applied to deployed functions).
+      functions:
+        - level: debug
+          sink: myStdoutLoggerSink
+
+    projectsLeader:
+      # Who is the source of truth for project definitions.
+      # Options: "mlrun" (MLRun manages projects, Nuclio follows),
+      #          "nuclio" (Nuclio manages its own projects independently)
+      # "mlrun" ensures projects stay in sync between MLRun and Nuclio.
+      kind: mlrun
+
+      # How often Nuclio syncs project state from MLRun.
+      synchronizationInterval: 10m
+
+      # MLRun API chief endpoint for project synchronization.
+      # Uses the in-cluster service DNS name.
+      apiAddress: http://mlrun-api-chief:8080/api
+
+# =============================================================================
+# MLRun Core
+# The central ML orchestration engine. Manages the full ML lifecycle:
+# data ingestion, training, serving, artifacts, feature store, and monitoring.
+# =============================================================================
+mlrun:
+
+  # Master toggle for deploying MLRun components (API, UI, DB).
+  enabled: true
+
+  # Default resource limits/requests applied to MLRun-submitted function pods
+  # (training jobs, serving functions, etc.) when the user doesn't specify resources.
+  # Adjust based on your cluster capacity and workload profiles.
+  defaultFunctionPodResources:
+    limits:
+      cpu: "2"
+      memory: "20Gi"
+    requests:
+      cpu: "25m"
+      memory: "1Mi"
+
+  # Backend storage type for MLRun's data layer.
+  # Options: "filesystem" (uses S3/MinIO via S3 protocol), "s3" (direct AWS S3)
+  # "filesystem" with S3 auto-mount params is the standard approach for MinIO.
+  storage: filesystem
+
+  # S3 auto-mount parameters injected into every MLRun job pod.
+  # When set to ~ (null), the helper template in _helpers.tpl resolves this dynamically:
+  #   - If s3NonAnonymous is false: builds params from minio.rootUser, minio.rootPassword,
+  #     and minio.externalHost (cross-namespace DNS)
+  #   - If s3NonAnonymous is true: uses "non_anonymous=True" (IAM-based auth)
+  # Override with an explicit string to use custom credentials or endpoints, e.g.:
+  #   "aws_access_key=mykey,aws_secret_key=mysecret,endpoint_url=http://custom-minio:9000"
+  storageAutoMountParams: ~
+
+  secrets:
+    s3:
+      # Explicit S3 credentials stored as a Kubernetes Secret.
+      # Only needed if storageAutoMountParams doesn't cover your use case,
+      # or if you need a separate secret for S3 access.
+      # When using MinIO with auto-mount params, these can remain empty.
+      accessKey: ""        # TODO: set if using external S3/MinIO
+      secretKey: ""        # TODO: set if using external S3/MinIO
+
+  # Stable service name override. Ensures "mlrun" instead of release-name-prefixed names.
+  fullnameOverride: mlrun
+
+  nuclio:
+    # MLRun's Nuclio integration mode.
+    # Options: "enabled" (MLRun can deploy Nuclio functions for serving/processing),
+    #          "disabled" (no Nuclio integration - serving functions won't work)
+    mode: enabled
+
+  rbac:
+    # Create RBAC resources for MLRun service accounts.
+    # Required for MLRun to manage jobs, pods, and CRDs in the namespace.
+    create: true
+
+  v3io:
+    # Iguazio V3IO data layer integration. Only for Iguazio enterprise platform.
+    # Must be false for community edition / standalone deployments.
+    enabled: false
+
+  api:
+    ingress:
+      # Ingress for the MLRun API. Disabled because we use ClusterIP + port-forward.
+      # Enable and configure when using an ingress controller (nginx, traefik, istio, etc.).
+      enabled: false
+
+    sidecars:
+      logCollector:
+        # Sidecar that collects logs from MLRun job pods and stores them.
+        # Recommended for production to preserve job logs after pod termination.
+        enabled: true
+
+    # Stable service name for cross-component references.
+    fullnameOverride: mlrun-api
+
+    # Default Kubernetes service account assigned to MLRun function/job pods.
+    # Set to a specific SA if pods need access to cloud resources, secrets, etc.
+    # ~ (null) means pods use the namespace default service account.
+    functionSpecServiceAccountDefault: ~
+
+    service:
+      # Service type for the MLRun API.
+      # Options: "ClusterIP" (internal only - production recommended),
+      #          "NodePort" (exposes on node IP:port - dev/testing),
+      #          "LoadBalancer" (cloud LB - when direct external access is needed)
+      type: ClusterIP
+
+    volumes:
+      storageOverride:
+        # PVC used by MLRun API for local file storage (logs, temp files).
+        # References the PVC created by api.persistence below.
+        persistentVolumeClaim:
+          claimName: mlrun-api-pvc
+
+    persistence:
+      # Enable persistent storage for the MLRun API.
+      # When false, data is lost on pod restart.
+      enabled: true
+
+      # Use a pre-existing PVC instead of creating one. Leave empty to auto-create.
+      existingClaim:
+
+      # Kubernetes StorageClass for dynamic PVC provisioning.
+      # Options: "" (use cluster default), "gp3" (AWS), "premium-rwo" (GKE),
+      #          "managed-premium" (AKS), or any custom StorageClass name.
+      storageClass:         # TODO: set production storage class
+
+      # PVC access mode.
+      # Options: "ReadWriteOnce" (single node read-write - most common),
+      #          "ReadWriteMany" (multi-node read-write - needed for HA with multiple API replicas),
+      #          "ReadOnlyMany" (multi-node read-only)
+      accessMode: "ReadWriteOnce"
+
+      # Storage size for MLRun API data. Increase if storing large local artifacts.
+      size: "8Gi"
+
+      annotations:
+        # Prevent Helm from deleting the PVC on "helm uninstall".
+        # Critical for production to avoid accidental data loss.
+        helm.sh/resource-policy: "keep"
+
+    # ConfigMaps injected as environment variables into the MLRun API pod.
+    # These are auto-generated by the chart's templates:
+    #   - mlrun-common-env: S3 credentials, artifact paths, feature store config
+    #   - mlrun-pipelines-config: Kubeflow Pipelines API URL
+    #   - mlrun-spark-config: Spark operator version and image (when spark-operator is enabled)
+    #   - mlrun-override-env: user-provided overrides (create manually if needed)
+    envFrom:
+      - configMapRef:
+          name: mlrun-common-env
+      - configMapRef:
+          name: mlrun-pipelines-config
+          optional: true
+      - configMapRef:
+          name: mlrun-spark-config
+          optional: true
+      - configMapRef:
+          name: mlrun-override-env
+          optional: true
+
+    # Additional PVC mounts for the API pod (e.g. shared data volumes).
+    # ~ (null) means no extra mounts.
+    extraPersistentVolumeMounts: ~
+
+  ui:
+    fullnameOverride: mlrun-ui
+    ingress:
+      # Ingress for MLRun UI. Same reasoning as api.ingress.
+      enabled: false
+    service:
+      # Service type for MLRun UI.
+      # Options: same as api.service.type above.
+      type: ClusterIP
+
+  db:
+    name: db
+    # Stable name so DSN references (mysql+pymysql://root@mlrun-db:3306/mlrun) work correctly.
+    fullnameOverride: mlrun-db
+
+    securityContext:
+      # MySQL runs as UID 999 (the mysql user inside the container).
+      # Changing this may cause permission errors on the data directory.
+      runAsUser: 999
+
+    podSecurityContext:
+      runAsUser: 999
+      # fsGroup ensures the PVC is writable by the mysql group.
+      fsGroup: 999
+
+    volumes:
+      storageOverride:
+        persistentVolumeClaim:
+          claimName: mlrun-db-pvc
+
+    persistence:
+      # Persistent storage for the MySQL database. Must be enabled in production
+      # to survive pod restarts. Losing this data means losing all project metadata.
+      enabled: true
+      existingClaim:
+      storageClass:          # TODO: set production storage class
+      accessMode: "ReadWriteOnce"
+      size: "8Gi"
+      annotations:
+        helm.sh/resource-policy: "keep"
+
+  httpDB:
+    # Database backend type for MLRun's metadata store.
+    # Options: "mysql" (production - persistent, concurrent access),
+    #          "sqlite" (dev only - single-writer, file-based)
+    dbType: mysql
+    dirPath: "/mlrun/db"
+
+    # MySQL connection string for MLRun's primary database.
+    # Points to the mlrun-db service deployed by this chart.
+    dsn: mysql+pymysql://root@mlrun-db:3306/mlrun
+
+    # Legacy SQLite DSN. Kept for migration from older MLRun versions.
+    # Not used when dbType is "mysql".
+    oldDsn: sqlite:////mlrun/db/mlrun.db?check_same_thread=false
+
+  modelMonitoring:
+    # Custom DSN for the model monitoring database.
+    # When empty, MLRun creates a monitoring DB under the same MySQL instance:
+    #   mysql+pymysql://root@mlrun-db:3306/mlrun_model_monitoring
+    # Set explicitly to use a separate database instance for monitoring data.
+    dsn:
+
+  ce:
+    # Community Edition mode. Controls which features are available.
+    # Options: "full" (all CE features enabled), "lite" (minimal features)
+    mode: full
+
+# =============================================================================
+# Jupyter Notebook
+# Pre-configured JupyterLab with MLRun SDK for interactive ML development.
+# =============================================================================
+jupyterNotebook:
+
+  serviceAccount:
+    # Create a dedicated service account for Jupyter pods.
+    # Allows fine-grained RBAC (e.g. limiting what Jupyter can access).
+    create: true
+    name: mlrun-jupyter
+
+  # Install AWS CLI tools in the Jupyter container. Not needed for MinIO-based setups.
+  awsInstall: false
+
+  fullnameOverride: mlrun-jupyter
+  name: jupyter-notebook
+
+  # Master toggle for deploying Jupyter. Disable if users have their own notebook environment.
+  enabled: true
+
+  service:
+    # Service type for Jupyter.
+    # Options: "ClusterIP" (internal - access via port-forward or ingress),
+    #          "NodePort" (default: 30040 - direct node access for dev),
+    #          "LoadBalancer" (cloud LB)
+    type: ClusterIP
+    port: 8888
+
+  ingress:
+    # Ingress for Jupyter. Enable when using an ingress controller.
+    enabled: false
+
+  image:
+    # Official MLRun Jupyter image with pre-installed SDK and ML libraries.
+    repository: quay.io/mlrun/jupyter
+    tag: 1.10.0
+    # Options: "IfNotPresent" (use cached image if available - faster restarts),
+    #          "Always" (always pull - ensures latest tag content, slower),
+    #          "Never" (only use local image - for air-gapped environments)
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+
+  busybox:
+    # Init container image used for volume permission setup (chown).
+    image: busybox
+    tag: 1.37
+
+  ce:
+    mode: full
+
+  # URL shown in Jupyter for linking to the MLRun UI.
+  # Default template builds this from externalHostAddress + nodePort, which breaks with ClusterIP.
+  # Set explicitly to the internal service URL or your ingress URL.
+  # Examples: "http://mlrun-ui:80/mlrun" (in-cluster), "https://mlrun.example.com" (via ingress)
+  mlrunUIURL: "http://mlrun-ui:80/mlrun"
+
+  # Extra environment variables as key-value pairs injected into the Jupyter container.
+  # Example: { "MY_VAR": "my-value" }
+  extraEnvKeyValue: {}
+
+  # ConfigMaps injected as environment variables.
+  # jupyter-common-env is auto-generated with S3 credentials and MLRun SDK config.
+  envFrom:
+    - configMapRef:
+        name: jupyter-common-env
+        optional: true
+
+  persistence:
+    # Persistent storage for Jupyter notebooks and user data at /home/jovyan/.
+    # Must be enabled in production to preserve work across pod restarts.
+    enabled: true
+    existingClaim:
+    storageClass:              # TODO: set production storage class
+    accessMode: "ReadWriteOnce"
+    size: "8Gi"
+    annotations:
+      helm.sh/resource-policy: "keep"
+
+  # Schedule Jupyter on specific nodes. Useful for GPU nodes or dedicated ML pools.
+  # Example: { "node-role.kubernetes.io/ml": "true" }
+  nodeSelector: {}
+
+  # Allow Jupyter to run on tainted nodes.
+  # Example: [{ key: "dedicated", operator: "Equal", value: "ml", effect: "NoSchedule" }]
+  tolerations: []
+
+# =============================================================================
+# MPI Operator
+# Manages distributed training jobs using MPI (Horovod, PyTorch DDP, etc.).
+# Installs the MPIJob CRD and controller.
+# =============================================================================
+mpi-operator:
+  fullnameOverride: mpi-operator
+
+  crd:
+    # Install MPIJob CRD. Set to false if CRDs are managed externally.
+    create: true
+
+  rbac:
+    clusterResources:
+      # Cluster-wide RBAC for the MPI operator (needed to manage pods across namespaces).
+      create: true
+    namespaced:
+      # Namespace-scoped RBAC for the MPI operator.
+      create: true
+
+  deployment:
+    # Deploy the MPI operator controller pod.
+    create: true
+
+# =============================================================================
+# MinIO - DISABLED (installed separately in aib-data namespace)
+#
+# MinIO is the S3-compatible object store used by all components for artifact storage.
+# It is disabled here because it runs in a separate namespace (aib-data) with its own
+# Helm release, allowing independent scaling, backup, and lifecycle management.
+#
+# Credentials and port are kept because chart templates (configmaps, secrets)
+# still reference these values even when MinIO itself is not deployed by this chart.
+# =============================================================================
+minio:
+  # Do not deploy MinIO pods/services from this chart.
+  enabled: false
+
+  # Cross-namespace DNS endpoint for MinIO running in aib-data.
+  # Used by the _helpers.tpl template to dynamically resolve MinIO URLs
+  # for all components (MLRun, Jupyter, Pipelines, Argo).
+  # When unset, falls back to "minio.<release-namespace>.svc.cluster.local".
+  # Format: <service-name>.<namespace>.svc.cluster.local
+  externalHost: minio.aib-data.svc.cluster.local
+
+  # MinIO root credentials. Must match the actual MinIO deployment in aib-data.
+  # These are injected into:
+  #   - mlrun-common-env configmap (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
+  #   - jupyter-common-env configmap
+  #   - mlpipeline-minio-artifact secret
+  #   - storageAutoMountParams (when auto-resolved)
+  rootUser: minio              # TODO: match credentials from aib-data MinIO
+  rootPassword: minio123       # TODO: match credentials from aib-data MinIO
+
+  service:
+    # MinIO API port. Must match the port exposed by MinIO in aib-data.
+    # Standard MinIO port is 9000. Console port (9001) is separate.
+    port: 9000
+
+# =============================================================================
+# Spark Operator
+# Manages Apache Spark applications on Kubernetes for distributed data
+# processing and ML training jobs submitted by MLRun.
+# =============================================================================
+spark-operator:
+
+  # Master toggle. Disable if you don't use Spark-based MLRun jobs.
+  enabled: true
+
+  fullnameOverride: spark-operator
+
+  controller:
+    # Webhook service name for the Spark mutating admission webhook.
+    serviceName: spark-operator-webhook
+
+  webhook:
+    # Enable the mutating admission webhook. Required for injecting
+    # volumes, environment variables, and tolerations into Spark pods.
+    enable: true
+
+  spark:
+    # Namespaces where Spark driver/executor pods are allowed to run.
+    # Must include the namespace where MLRun submits SparkApplication CRDs.
+    # Add additional namespaces if Spark jobs should run elsewhere.
+    jobNamespaces:
+      - aib-system
+
+    serviceAccount:
+      # Service account used by Spark driver and executor pods.
+      # Must have permissions to create/manage pods in the jobNamespaces.
+      name: sparkapp
+
+# =============================================================================
+# Kubeflow Pipelines (with UI ENABLED)
+# Workflow orchestration engine for multi-step ML pipelines.
+# Runs pipelines as Argo Workflows, tracks metadata via MLMD,
+# and provides a web UI for pipeline visualization.
+# =============================================================================
+pipelines:
+
+  # Master toggle. Disable if you don't use Kubeflow Pipelines for workflow orchestration.
+  # When disabled, MLRun can still run individual jobs but cannot orchestrate multi-step pipelines.
+  enabled: true
+
+  name: pipelines
+
+  ui:
+    # Kubeflow Pipelines web UI for visualizing pipeline DAGs, viewing run history,
+    # comparing experiments, and browsing artifacts.
+    # Default is false in the upstream chart. Enabled here for full pipeline visibility.
+    enabled: true
+
+  service:
+    # Service type for the Pipelines UI (ml-pipeline-ui).
+    # Options: "ClusterIP", "NodePort" (default: 30100), "LoadBalancer"
+    type: ClusterIP
+
+    # The ml-pipeline-ui service template hardcodes a nodePort field.
+    # Must be set to empty string when using ClusterIP to avoid Kubernetes
+    # rejecting the spec ("nodePort is not allowed for ClusterIP services").
+    nodePort: ""
+
+  crd:
+    # Install Argo Workflow CRDs and Kubeflow Pipeline CRDs
+    # (ScheduledWorkflow, Viewer, etc.).
+    # Set to false if CRDs are managed externally.
+    enabled: true
+
+  priority_class:
+    # Create a PriorityClass for the Argo workflow controller.
+    # Ensures the controller gets scheduled even under resource pressure.
+    enabled: true
+
+  persistence:
+    # Persistent storage for Pipelines' MySQL database (pipeline metadata, MLMD, cache).
+    # Must be enabled in production. Losing this data means losing all pipeline history.
+    enabled: true
+    existingClaim:
+    storageClass:              # TODO: set production storage class
+    accessMode: "ReadWriteOnce"
+    # Pipelines MySQL stores pipeline definitions, run metadata, and ML metadata.
+    # 20Gi is recommended for production with many pipeline runs.
+    size: "20Gi"
+    annotations:
+      helm.sh/resource-policy: "keep"
+
+  # Schedule pipeline pods on specific nodes.
+  nodeSelector: {}
+  tolerations: []
+
+  db:
+    # Pipelines' dedicated MySQL instance credentials.
+    username: root
+
+    securityContext:
+      # MySQL container runs as UID 1001 (bitnami MySQL convention).
+      runAsUser: 1001
+      runAsGroup: 1001
+      fsGroup: 1001
+      # Only change ownership when the root directory ownership doesn't match.
+      # Faster than "Always" for large data directories.
+      fsGroupChangePolicy: OnRootMismatch
+
+  minio:
+    # Pipelines' MinIO integration for storing pipeline artifacts and Argo logs.
+    # Even though MinIO is deployed externally, the pipelines templates need these
+    # values to create the mlpipeline-minio-artifact secret and pipeline-install-config configmap.
+    # The actual MinIO endpoint is resolved dynamically via minio.externalHost.
+    enabled: true
+
+    # Credentials must match the MinIO deployment in aib-data.
+    accessKey: "minio"         # TODO: match credentials from aib-data MinIO
+    secretKey: "minio123"      # TODO: match credentials from aib-data MinIO
+
+    # MinIO API port. Must match minio.service.port above and the actual MinIO deployment.
+    endpointPort: "9000"
+
+    # S3 bucket where pipeline artifacts are stored.
+    # Must exist in MinIO before running pipelines.
+    bucket: "mlrun"
+
+  # Container images for all Kubeflow Pipelines components.
+  # Pin to specific versions for reproducibility. Upgrade carefully
+  # as KFP components must be version-compatible with each other.
+  images:
+    # KFP v2 pipeline step driver (handles step I/O, caching, metadata).
+    driver:
+      repository: ghcr.io/kubeflow/kfp-driver
+      tag: 2.14.3
+    # KFP v2 pipeline step launcher (creates the actual step container).
+    launcher:
+      repository: ghcr.io/kubeflow/kfp-launcher
+      tag: 2.14.3
+    # Argo Workflows executor sidecar (manages artifacts, logs, wait containers).
+    argoexec:
+      repository: gcr.io/iguazio/argoexec
+      tag: v3.4.17-license-compliance
+    # Argo Workflows controller (orchestrates DAG execution).
+    workflowController:
+      repository: gcr.io/iguazio/workflow-controller
+      tag: v3.4.17-license-compliance
+    # Pipelines REST/gRPC API server.
+    apiServer:
+      repository: ghcr.io/kubeflow/kfp-api-server
+      tag: 2.14.3
+    # Syncs Argo workflow status back to the Pipelines API.
+    persistenceagent:
+      repository: ghcr.io/kubeflow/kfp-persistence-agent
+      tag: 2.14.3
+    # Manages cron-scheduled recurring pipeline runs.
+    scheduledworkflow:
+      repository: ghcr.io/kubeflow/kfp-scheduled-workflow-controller
+      tag: 2.14.3
+    # Pipelines web frontend.
+    ui:
+      repository: ghcr.io/kubeflow/kfp-frontend
+      tag: 2.14.3
+    # Manages Viewer CRDs (TensorBoard, etc.) for pipeline output visualization.
+    viewerCrdController:
+      repository: ghcr.io/kubeflow/kfp-viewer-crd-controller
+      tag: 2.14.3
+    # Renders pipeline visualizations (HTML, ROC curves, confusion matrices).
+    visualizationServer:
+      repository: ghcr.io/kubeflow/kfp-visualization-server
+      tag: 2.14.3
+    # ML Metadata gRPC server (tracks pipeline lineage: inputs, outputs, executions).
+    metadata:
+      container:
+        repository: gcr.io/tfx-oss-public/ml_metadata_store_server
+        tag: 1.16.0
+    # gRPC proxy for the metadata server.
+    metadataEnvoy:
+      repository: ghcr.io/kubeflow/kfp-metadata-envoy
+      tag: 2.14.3
+    # Watches completed workflows and writes lineage to MLMD.
+    metadataWriter:
+      repository: ghcr.io/kubeflow/kfp-metadata-writer
+      tag: 2.14.3
+    # Pipelines' dedicated MySQL instance.
+    # Pinned to 8.0.26 because >= 8.0.27 deprecated default_authentication_plugin
+    # which is required by MLMD workloads (metadata-grpc, metadata-writer).
+    mysql:
+      repository: gcr.io/iguazio/mysql
+      tag: "8.0.26"
+    # Lightweight image used for KFP pipeline caching steps.
+    cacheImage:
+      repository: gcr.io/google-containers/busybox
+      tag: latest
+    # MinIO image - only used if pipelines deploys its own MinIO (not the case here,
+    # but the value is still required by some template conditionals).
+    minio:
+      repository: minio/minio
+      tag: "RELEASE.2025-10-15T17-29-55Z"
+
+# =============================================================================
+# Kube Prometheus Stack - DISABLED
+#
+# Provides Prometheus + Grafana for monitoring MLRun and cluster metrics.
+# Disabled because monitoring is handled by a separate stack or not needed.
+#
+# Grafana service stub values are kept because the mlrun-env-configmap template
+# unconditionally references kube-prometheus-stack.grafana.service.nodePort
+# to build MLRUN_GRAFANA_URL. Without these values, Helm would fail with a nil error.
+#
+# To enable: set enabled to true and configure grafana/prometheus service types,
+# persistence, and dashboards. See the original chart values for full options.
+# =============================================================================
+kube-prometheus-stack:
+  enabled: false
+  grafana:
+    enabled: false
+    service:
+      # Stub value to prevent template nil-pointer error.
+      # Not used when the stack is disabled.
+      nodePort: 0
+
+# =============================================================================
+# TDengine - DISABLED
+#
+# Time-series database used by MLRun for model monitoring metrics storage.
+# Disabled here. Enable if you need MLRun's built-in model monitoring with
+# time-series data (prediction drift, data quality metrics).
+# Alternative: use an external time-series DB and configure MLRun to connect to it.
+# =============================================================================
+tdengine:
+  enabled: false
+
+# =============================================================================
+# Kafka - DISABLED (installed separately in aib-data namespace)
+#
+# Event streaming platform used by MLRun for:
+# - Real-time model monitoring (streaming prediction data)
+# - Event-driven function triggers
+#
+# Disabled here because Kafka is deployed in aib-data namespace with its own
+# Helm release for independent scaling and management.
+# MLRun connects to Kafka via configuration at runtime (not via chart values).
+# =============================================================================
+kafka:
+  enabled: false
