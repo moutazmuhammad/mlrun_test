@@ -1,0 +1,78 @@
+{{- if and (eq .Values.global.infrastructure.kind "aws") (eq .Values.global.infrastructure.provider "eks") }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mlrun-ce-ingress
+  annotations:
+    alb.ingress.kubernetes.io/group.name: {{ .Values.global.externalHostAddress }}
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    {{- if .Values.global.infrastructure.inboundCidrs }}
+    alb.ingress.kubernetes.io/inbound-cidrs: {{ .Values.global.infrastructure.inboundCidrs }}
+    {{- end }}
+    {{- if .Values.global.infrastructure.loadBalancerName }}
+    alb.ingress.kubernetes.io/load-balancer-name: {{ .Values.global.infrastructure.loadBalancerName }}
+    {{- end }}
+    {{- if .Values.global.infrastructure.aws.domainNameCertificate }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.global.infrastructure.aws.domainNameCertificate }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    {{- else }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    {{- end }}
+spec:
+  ingressClassName: alb
+  rules:
+    - host: mlrun.{{ .Values.global.externalHostAddress }}
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mlrun-ui
+                port:
+                  number: 80
+    - host: mlrun-api.{{ .Values.global.externalHostAddress }}
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mlrun-api
+                port:
+                  number: 8080
+    - host: nuclio.{{ .Values.global.externalHostAddress }}
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: nuclio-dashboard
+                port:
+                  number: 8070
+    - host: jupyter.{{ .Values.global.externalHostAddress }}
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mlrun-jupyter
+                port:
+                  number: 80
+    {{- if index .Values "kube-prometheus-stack" "enabled" }}
+    - host: grafana.{{ .Values.global.externalHostAddress }}
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 80
+    {{- end }}
+{{- end }}
