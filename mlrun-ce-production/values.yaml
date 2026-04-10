@@ -191,13 +191,13 @@ nuclio:
             timeFieldEncoding: iso8601
       # System-level log config (controller, dashboard).
       # Options for level: "debug", "info", "warn", "error"
-      # Use "info" in production if debug logs are too verbose.
+      # "info" for production to reduce log volume and noise.
       system:
-        - level: debug
+        - level: info
           sink: myStdoutLoggerSink
       # Function-level log config (applied to deployed functions).
       functions:
-        - level: debug
+        - level: info
           sink: myStdoutLoggerSink
 
     projectsLeader:
@@ -302,6 +302,38 @@ mlrun:
       #          "LoadBalancer" (cloud LB - when direct external access is needed)
       type: ClusterIP
 
+    # Security context for the MLRun API container.
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      runAsNonRoot: true
+
+    # Pod-level security context for the MLRun API pod.
+    podSecurityContext:
+      runAsNonRoot: true
+
+    # Liveness probe for the MLRun API.
+    livenessProbe:
+      httpGet:
+        path: /api/healthz
+        port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 5
+
+    # Readiness probe for the MLRun API.
+    readinessProbe:
+      httpGet:
+        path: /api/healthz
+        port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
     # Resource limits for the MLRun API pod.
     resources:
       requests:
@@ -379,6 +411,14 @@ mlrun:
       # Service type for MLRun UI.
       # Options: same as api.service.type above.
       type: ClusterIP
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      runAsNonRoot: true
+    podSecurityContext:
+      runAsNonRoot: true
     # Resource limits for the MLRun UI pod.
     resources:
       requests:
@@ -402,6 +442,32 @@ mlrun:
       runAsUser: 999
       # fsGroup ensures the PVC is writable by the mysql group.
       fsGroup: 999
+
+    # Liveness probe for MLRun MySQL.
+    livenessProbe:
+      exec:
+        command:
+        - mysqladmin
+        - ping
+        - -h
+        - localhost
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+    # Readiness probe for MLRun MySQL.
+    readinessProbe:
+      exec:
+        command:
+        - mysqladmin
+        - ping
+        - -h
+        - localhost
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
 
     # Resource limits for the MLRun MySQL database pod.
     resources:
