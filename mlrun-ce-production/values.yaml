@@ -3,6 +3,10 @@
 # Namespace: aib-system (main components)
 # Minio & Kafka: DISABLED here - installed separately in namespace "aib-data"
 # Service type: ClusterIP only (no NodePort, no LoadBalancer)
+#
+# SECRETS: No credentials are hardcoded. All sensitive values are referenced
+#   from pre-created Kubernetes Secrets. See INSTALL.md step 3 and 6 for
+#   creating the required secrets before deploying this chart.
 # =============================================================================
 
 global:
@@ -31,20 +35,13 @@ global:
 
     # Name of a Kubernetes docker-registry secret for pulling/pushing images.
     #
-    # For GCP Artifact Registry, use one of:
-    #   1. Workload Identity (recommended for GKE) - set secretName to "" and configure
-    #      Workload Identity on the Nuclio and function service accounts.
-    #   2. Service account JSON key - create a secret from a GCP SA key file:
-    #      kubectl create secret docker-registry gcr-registry-credentials \
-    #        --docker-server=us-central1-docker.pkg.dev \
-    #        --docker-username=_json_key \
-    #        --docker-password="$(cat sa-key.json)" \
-    #        --namespace aib-system
+    # Using GKE Workload Identity - no secret needed. Authentication is handled
+    # by binding a GCP service account (with roles/artifactregistry.writer) to
+    # the Kubernetes service accounts via IAM policy bindings.
+    # See INSTALL.md step 3 for Workload Identity setup.
     #
-    # For other registries:
-    #   Create with: kubectl create secret docker-registry <name> --docker-server=... --docker-username=... --docker-password=...
-    #   Leave empty if using node-level credentials (IAM roles, Workload Identity).
-    secretName: "gcr-registry-credentials"
+    # Leave empty when using Workload Identity or node-level credentials.
+    secretName: ""
 
   nuclio:
     dashboard:
@@ -78,7 +75,7 @@ global:
       bucketName: mlrun
 
       # When false: MLRun uses explicit credentials (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
-      #   from minio.rootUser/rootPassword. This is the correct setting for MinIO.
+      #   injected from the "minio-credentials" Kubernetes Secret.
       # When true: MLRun relies on IAM roles / instance profiles for S3 access (no explicit keys).
       #   Use this only with real AWS S3 and IAM-based authentication.
       s3NonAnonymous: false
@@ -104,6 +101,15 @@ nuclio:
     # Must be enabled - it is the core runtime of Nuclio.
     enabled: true
 
+    # Resource limits for the Nuclio controller pod.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
   dashboard:
     # Nuclio's management API and optional web UI. MLRun API uses it to deploy serving functions.
     # Disable only if managing Nuclio functions exclusively via kubectl/CRDs.
@@ -124,6 +130,15 @@ nuclio:
       # Required by many production PSPs/PSAs and OPA/Gatekeeper policies.
       runAsNonRoot: true
       runAsUser: 1000
+
+    # Resource limits for the Nuclio dashboard pod.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
 
   autoscaler:
     # Nuclio's built-in function autoscaler. Scales functions based on custom metrics.
@@ -227,21 +242,19 @@ mlrun:
 
   # S3 auto-mount parameters injected into every MLRun job pod.
   # When set to ~ (null), the helper template in _helpers.tpl resolves this dynamically:
-  #   - If s3NonAnonymous is false: builds params from minio.rootUser, minio.rootPassword,
-  #     and minio.externalHost (cross-namespace DNS)
+  #   - If s3NonAnonymous is false: builds endpoint_url from minio.externalHost.
+  #     Credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) are injected separately
+  #     from the "minio-credentials" Kubernetes Secret via envFrom.
   #   - If s3NonAnonymous is true: uses "non_anonymous=True" (IAM-based auth)
-  # Override with an explicit string to use custom credentials or endpoints, e.g.:
-  #   "aws_access_key=mykey,aws_secret_key=mysecret,endpoint_url=http://custom-minio:9000"
   storageAutoMountParams: ~
 
   secrets:
     s3:
-      # Explicit S3 credentials stored as a Kubernetes Secret.
-      # Only needed if storageAutoMountParams doesn't cover your use case,
-      # or if you need a separate secret for S3 access.
-      # When using MinIO with auto-mount params, these can remain empty.
-      accessKey: ""        # TODO: set if using external S3/MinIO
-      secretKey: ""        # TODO: set if using external S3/MinIO
+      # These are no longer used for credential injection. Credentials come from
+      # the "minio-credentials" Kubernetes Secret (see minio.existingSecret below).
+      # Kept empty to satisfy the chart schema.
+      accessKey: ""
+      secretKey: ""
 
   # Stable service name override. Ensures "mlrun" instead of release-name-prefixed names.
   fullnameOverride: mlrun
@@ -289,6 +302,15 @@ mlrun:
       #          "LoadBalancer" (cloud LB - when direct external access is needed)
       type: ClusterIP
 
+    # Resource limits for the MLRun API pod.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
     volumes:
       storageOverride:
         # PVC used by MLRun API for local file storage (logs, temp files).
@@ -323,12 +345,12 @@ mlrun:
         # Critical for production to avoid accidental data loss.
         helm.sh/resource-policy: "keep"
 
-    # ConfigMaps injected as environment variables into the MLRun API pod.
-    # These are auto-generated by the chart's templates:
-    #   - mlrun-common-env: S3 credentials, artifact paths, feature store config
-    #   - mlrun-pipelines-config: Kubeflow Pipelines API URL
-    #   - mlrun-spark-config: Spark operator version and image (when spark-operator is enabled)
-    #   - mlrun-override-env: user-provided overrides (create manually if needed)
+    # ConfigMaps and Secrets injected as environment variables into the MLRun API pod.
+    # - mlrun-common-env: artifact paths, feature store config, endpoint URLs
+    # - mlrun-pipelines-config: Kubeflow Pipelines API URL
+    # - mlrun-spark-config: Spark operator version and image (when spark-operator is enabled)
+    # - mlrun-override-env: user-provided overrides (create manually if needed)
+    # - minio-credentials: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from external secret
     envFrom:
       - configMapRef:
           name: mlrun-common-env
@@ -341,6 +363,8 @@ mlrun:
       - configMapRef:
           name: mlrun-override-env
           optional: true
+      - secretRef:
+          name: minio-credentials
 
     # Additional PVC mounts for the API pod (e.g. shared data volumes).
     # ~ (null) means no extra mounts.
@@ -355,6 +379,14 @@ mlrun:
       # Service type for MLRun UI.
       # Options: same as api.service.type above.
       type: ClusterIP
+    # Resource limits for the MLRun UI pod.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
 
   db:
     name: db
@@ -370,6 +402,15 @@ mlrun:
       runAsUser: 999
       # fsGroup ensures the PVC is writable by the mysql group.
       fsGroup: 999
+
+    # Resource limits for the MLRun MySQL database pod.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
 
     volumes:
       storageOverride:
@@ -396,6 +437,7 @@ mlrun:
 
     # MySQL connection string for MLRun's primary database.
     # Points to the mlrun-db service deployed by this chart.
+    # Note: the DSN is stored in a Kubernetes Secret by the mlrun subchart automatically.
     dsn: mysql+pymysql://root@mlrun-db:3306/mlrun
 
     # Legacy SQLite DSN. Kept for migration from older MLRun versions.
@@ -475,12 +517,15 @@ jupyterNotebook:
   # Example: { "MY_VAR": "my-value" }
   extraEnvKeyValue: {}
 
-  # ConfigMaps injected as environment variables.
-  # jupyter-common-env is auto-generated with S3 credentials and MLRun SDK config.
+  # ConfigMaps and Secrets injected as environment variables.
+  # - jupyter-common-env: auto-generated with S3 endpoint and MLRun SDK config
+  # - minio-credentials: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from external secret
   envFrom:
     - configMapRef:
         name: jupyter-common-env
         optional: true
+    - secretRef:
+        name: minio-credentials
 
   persistence:
     # Persistent storage for Jupyter notebooks and user data at /home/jovyan/.
@@ -525,6 +570,15 @@ mpi-operator:
     # Deploy the MPI operator controller pod.
     create: true
 
+  # Resource limits for the MPI operator controller pod.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
 # =============================================================================
 # MinIO - DISABLED (installed separately in aib-data namespace)
 #
@@ -532,8 +586,16 @@ mpi-operator:
 # It is disabled here because it runs in a separate namespace (aib-data) with its own
 # Helm release, allowing independent scaling, backup, and lifecycle management.
 #
-# Credentials and port are kept because chart templates (configmaps, secrets)
-# still reference these values even when MinIO itself is not deployed by this chart.
+# SECRETS: MinIO credentials are NOT stored in values.yaml.
+# Instead, create a Kubernetes Secret before deploying:
+#
+#   kubectl create secret generic minio-credentials \
+#     --from-literal=AWS_ACCESS_KEY_ID=<your-minio-user> \
+#     --from-literal=AWS_SECRET_ACCESS_KEY=<your-minio-password> \
+#     --namespace aib-system
+#
+# This secret is referenced by MLRun API and Jupyter via envFrom.secretRef,
+# and by the Pipelines minio artifact secret via existingSecret.
 # =============================================================================
 minio:
   # Do not deploy MinIO pods/services from this chart.
@@ -546,14 +608,19 @@ minio:
   # Format: <service-name>.<namespace>.svc.cluster.local
   externalHost: minio.aib-data.svc.cluster.local
 
-  # MinIO root credentials. Must match the actual MinIO deployment in aib-data.
-  # These are injected into:
-  #   - mlrun-common-env configmap (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
-  #   - jupyter-common-env configmap
-  #   - mlpipeline-minio-artifact secret
-  #   - storageAutoMountParams (when auto-resolved)
-  rootUser: minio              # TODO: match credentials from aib-data MinIO
-  rootPassword: minio123       # TODO: match credentials from aib-data MinIO
+  # Name of a pre-existing Kubernetes Secret containing MinIO credentials.
+  # When set, the chart will NOT create its own minio-credentials secret.
+  # The secret must contain keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+  # Set to "" to let the chart create the secret from rootUser/rootPassword (NOT recommended).
+  existingSecret: "minio-credentials"
+
+  # Name for the auto-generated secret (only used when existingSecret is empty).
+  credentialsSecretName: "minio-credentials"
+
+  # MinIO root credentials - ONLY used if existingSecret is empty.
+  # In production, always use existingSecret and leave these as placeholders.
+  rootUser: ""
+  rootPassword: ""
 
   service:
     # MinIO API port. Must match the port exposed by MinIO in aib-data.
@@ -576,10 +643,40 @@ spark-operator:
     # Webhook service name for the Spark mutating admission webhook.
     serviceName: spark-operator-webhook
 
+    # Resource limits for the Spark operator controller pod.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 300Mi
+
+    # PodDisruptionBudget for the Spark operator controller.
+    # Ensures the controller remains available during node maintenance or upgrades.
+    # Requires controller.replicas > 1 to be effective.
+    podDisruptionBudget:
+      enable: true
+      minAvailable: 1
+
   webhook:
     # Enable the mutating admission webhook. Required for injecting
     # volumes, environment variables, and tolerations into Spark pods.
     enable: true
+
+    # Resource limits for the Spark webhook pod.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 300Mi
+
+    # PodDisruptionBudget for the Spark webhook.
+    podDisruptionBudget:
+      enable: true
+      minAvailable: 1
 
   spark:
     # Namespaces where Spark driver/executor pods are allowed to run.
@@ -598,6 +695,14 @@ spark-operator:
 # Workflow orchestration engine for multi-step ML pipelines.
 # Runs pipelines as Argo Workflows, tracks metadata via MLMD,
 # and provides a web UI for pipeline visualization.
+#
+# SECRETS: Pipelines MinIO credentials come from a pre-created Kubernetes Secret.
+# Create before deploying:
+#
+#   kubectl create secret generic mlpipeline-minio-artifact \
+#     --from-literal=accesskey=<your-minio-user> \
+#     --from-literal=secretkey=<your-minio-password> \
+#     --namespace aib-system
 # =============================================================================
 pipelines:
 
@@ -666,14 +771,18 @@ pipelines:
 
   minio:
     # Pipelines' MinIO integration for storing pipeline artifacts and Argo logs.
-    # Even though MinIO is deployed externally, the pipelines templates need these
-    # values to create the mlpipeline-minio-artifact secret and pipeline-install-config configmap.
     # The actual MinIO endpoint is resolved dynamically via minio.externalHost.
     enabled: true
 
-    # Credentials must match the MinIO deployment in aib-data.
-    accessKey: "minio"         # TODO: match credentials from aib-data MinIO
-    secretKey: "minio123"      # TODO: match credentials from aib-data MinIO
+    # Name of a pre-existing Kubernetes Secret containing MinIO credentials.
+    # When set, the chart will NOT create its own mlpipeline-minio-artifact secret.
+    # The secret must contain keys: accesskey, secretkey
+    existingSecret: "mlpipeline-minio-artifact"
+
+    # Credentials below are ONLY used if existingSecret is empty.
+    # In production, always use existingSecret and leave these as placeholders.
+    accessKey: ""
+    secretKey: ""
 
     # MinIO API port. Must match minio.service.port above and the actual MinIO deployment.
     endpointPort: "9000"

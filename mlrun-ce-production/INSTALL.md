@@ -115,13 +115,25 @@ gcloud artifacts repositories create ${REPO_NAME} \
 
 Your registry URL will be: `${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO_NAME}`
 
-### 3.2 Choose an Authentication Method
+### 3.2 Set Up Workload Identity
 
-#### Option A: Workload Identity (Recommended for GKE)
+Workload Identity lets Kubernetes service accounts authenticate to GCP services (like Artifact Registry) via IAM - no JSON keys, no stored credentials.
 
-This is the most secure approach. Nuclio and function pods authenticate to Artifact Registry via GCP IAM without any stored credentials.
+**Step 1** - Ensure Workload Identity is enabled on your GKE cluster:
 
-**Step 1** - Create a GCP service account:
+```bash
+# Check if already enabled
+gcloud container clusters describe <CLUSTER_NAME> \
+  --zone <ZONE> \
+  --format="value(workloadIdentityConfig.workloadPool)"
+
+# If empty, enable it (requires cluster update)
+gcloud container clusters update <CLUSTER_NAME> \
+  --zone <ZONE> \
+  --workload-pool="${GCP_PROJECT}.svc.id.goog"
+```
+
+**Step 2** - Create a GCP service account:
 
 ```bash
 GCP_SA_NAME="mlrun-registry"
@@ -130,7 +142,7 @@ gcloud iam service-accounts create ${GCP_SA_NAME} \
   --display-name="MLRun Artifact Registry access"
 ```
 
-**Step 2** - Grant it Artifact Registry Writer role (push + pull):
+**Step 3** - Grant it Artifact Registry Writer role (push + pull):
 
 ```bash
 gcloud projects add-iam-policy-binding ${GCP_PROJECT} \
@@ -138,7 +150,7 @@ gcloud projects add-iam-policy-binding ${GCP_PROJECT} \
   --role="roles/artifactregistry.writer"
 ```
 
-**Step 3** - Bind the GCP SA to the Kubernetes service accounts that need registry access:
+**Step 4** - Bind the GCP SA to the Kubernetes service accounts that need registry access:
 
 ```bash
 # Nuclio dashboard (builds and pushes images) - in aib-system
@@ -154,7 +166,7 @@ gcloud iam service-accounts add-iam-policy-binding \
   --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[aib-serving/default]"
 ```
 
-**Step 4** - Annotate the Kubernetes service accounts (after Helm install in step 7, or pre-create them):
+**Step 5** - Annotate the Kubernetes service accounts (after Helm install in step 7, or pre-create them):
 
 ```bash
 # Nuclio SA in aib-system
@@ -168,71 +180,40 @@ kubectl annotate serviceaccount default \
   iam.gke.io/gcp-service-account=${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com
 ```
 
-**Step 5** - In `values.yaml`, leave the secret name empty:
+> **Note:** The `nuclio` service account is created by the Helm chart. If annotating before install, pre-create it:
+> ```bash
+> kubectl create serviceaccount nuclio --namespace aib-system
+> ```
+
+**Step 6** - In `values.yaml`, the registry secret is already set to empty (Workload Identity needs no secret):
 
 ```yaml
 global:
   registry:
     url: "us-central1-docker.pkg.dev/your-gcp-project/mlrun-functions"
-    secretName: ""
+    secretName: ""     # no secret needed with Workload Identity
 ```
 
-#### Option B: Service Account JSON Key
-
-Use this if you are NOT on GKE, or if Workload Identity is not available.
-
-**Step 1** - Create a GCP service account and download a key:
+### 3.3 Verify Workload Identity and Registry Access
 
 ```bash
-GCP_SA_NAME="mlrun-registry"
+# Verify Workload Identity is configured on the cluster
+gcloud container clusters describe <CLUSTER_NAME> \
+  --zone <ZONE> \
+  --format="value(workloadIdentityConfig.workloadPool)"
+# Expected: <project-id>.svc.id.goog
 
-gcloud iam service-accounts create ${GCP_SA_NAME} \
-  --display-name="MLRun Artifact Registry access"
+# Verify IAM binding exists
+gcloud iam service-accounts get-iam-policy \
+  ${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com \
+  --format="table(bindings.role,bindings.members)"
 
-gcloud projects add-iam-policy-binding ${GCP_PROJECT} \
-  --member="serviceAccount:${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com" \
-  --role="roles/artifactregistry.writer"
+# After Helm install, verify the SA annotation
+kubectl get serviceaccount nuclio -n aib-system -o jsonpath='{.metadata.annotations.iam\.gke\.io/gcp-service-account}'
+# Expected: mlrun-registry@<project-id>.iam.gserviceaccount.com
 
-gcloud iam service-accounts keys create sa-key.json \
-  --iam-account=${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com
-```
-
-**Step 2** - Create the Kubernetes secret in both namespaces:
-
-```bash
-for NS in aib-system aib-serving; do
-  kubectl create secret docker-registry gcr-registry-credentials \
-    --docker-server="${GCP_REGION}-docker.pkg.dev" \
-    --docker-username="_json_key" \
-    --docker-password="$(cat sa-key.json)" \
-    --namespace "${NS}"
-done
-```
-
-**Step 3** - In `values.yaml`, set the secret name:
-
-```yaml
-global:
-  registry:
-    url: "us-central1-docker.pkg.dev/your-gcp-project/mlrun-functions"
-    secretName: "gcr-registry-credentials"
-```
-
-**Step 4** - Delete the key file from your machine:
-
-```bash
-rm sa-key.json
-```
-
-### 3.3 Verify Registry Access
-
-After setting up authentication, verify you can push to the registry:
-
-```bash
-# Authenticate Docker locally (for testing)
+# Test push from your machine (for validation)
 gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev
-
-# Test push
 docker pull busybox:latest
 docker tag busybox:latest ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO_NAME}/test:latest
 docker push ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO_NAME}/test:latest
@@ -430,27 +411,48 @@ kubectl wait --for=condition=Ready pods \
 
 ---
 
-## 6. Update values.yaml with Your Configuration
+## 6. Create Secrets and Update Configuration
 
-Before installing MLRun CE, update `mlrun-ce-production/values.yaml` with your environment-specific values.
+No credentials are stored in `values.yaml`. All sensitive values are managed as Kubernetes Secrets created before the Helm install.
 
-### 6.1 Required Changes
+### 6.1 Create MinIO Credentials Secret
 
-Open `values.yaml` and update the following (search for `TODO`):
+This secret provides S3 credentials to MLRun API, Jupyter, and job pods. The values must match your MinIO deployment from step 4.
 
 ```bash
-grep -n "TODO" mlrun-ce-production/values.yaml
+# Replace with your actual MinIO credentials from step 4
+kubectl create secret generic minio-credentials \
+  --from-literal=AWS_ACCESS_KEY_ID=minio \
+  --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \
+  --namespace aib-system
 ```
 
-| Value | What to Set |
-|-------|-------------|
-| `global.registry.url` | Your GCP Artifact Registry URL (e.g. `us-central1-docker.pkg.dev/my-project/mlrun-functions`) |
-| `global.registry.secretName` | `"gcr-registry-credentials"` (JSON key) or `""` (Workload Identity) - see step 3 |
-| `minio.rootUser` / `rootPassword` | Must match what you set in step 4 |
-| `pipelines.minio.accessKey` / `secretKey` | Must match what you set in step 4 |
-| All `storageClass` fields | Your cluster's StorageClass name |
+### 6.2 Create Pipelines MinIO Artifact Secret
 
-### 6.2 Storage Class
+This secret provides MinIO credentials to Kubeflow Pipelines components (API server, UI, Argo). The key names are different from the MLRun secret because the Pipelines templates expect `accesskey`/`secretkey`.
+
+```bash
+# Same credentials, different key names
+kubectl create secret generic mlpipeline-minio-artifact \
+  --from-literal=accesskey=minio \
+  --from-literal=secretkey=minio123 \
+  --namespace aib-system
+```
+
+### 6.3 Verify Secrets
+
+```bash
+kubectl get secrets -n aib-system | grep -E "minio|mlpipeline"
+```
+
+Expected:
+
+```
+minio-credentials              Opaque   2   ...
+mlpipeline-minio-artifact      Opaque   2   ...
+```
+
+### 6.4 Update Storage Class
 
 Find all storage class fields and set them:
 
@@ -467,21 +469,17 @@ storageClass: "managed-csi"    # AKS
 storageClass: "local-path"     # k3s/Rancher
 ```
 
-### 6.3 MinIO Credentials
+### 6.5 Update Registry URL
 
-Ensure these match exactly between `minio-values.yaml` (step 4) and `values.yaml`:
-
-```yaml
-# In values.yaml - these must match MinIO deployment in aib-data
-minio:
-  rootUser: minio              # same as minio-values.yaml rootUser
-  rootPassword: minio123       # same as minio-values.yaml rootPassword
-
-pipelines:
-  minio:
-    accessKey: "minio"         # same as minio-values.yaml rootUser
-    secretKey: "minio123"      # same as minio-values.yaml rootPassword
+```bash
+grep -n "TODO" mlrun-ce-production/values.yaml
 ```
+
+| Value | What to Set |
+|-------|-------------|
+| `global.registry.url` | Your GCP Artifact Registry URL (e.g. `us-central1-docker.pkg.dev/my-project/mlrun-functions`) |
+| `global.registry.secretName` | `"gcr-registry-credentials"` (JSON key) or `""` (Workload Identity) - see step 3 |
+| All `storageClass` fields | Your cluster's StorageClass name |
 
 ---
 
