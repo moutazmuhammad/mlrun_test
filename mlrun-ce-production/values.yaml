@@ -22,25 +22,59 @@ global:
     # Container registry where Nuclio builds and pushes function images.
     # Must be accessible from the cluster nodes for image pulls.
     #
-    # GCP Artifact Registry format:
-    #   <region>-docker.pkg.dev/<project-id>/<repository-name>
-    #   Example: us-central1-docker.pkg.dev/my-gcp-project/mlrun-functions
+    # CLOUD-AGNOSTIC - set the value that matches your target cloud:
     #
-    # Other examples:
-    #   "docker.io/myorg", "ghcr.io/myorg",
-    #   "123456.dkr.ecr.us-east-1.amazonaws.com/myrepo"
+    #   GCP Artifact Registry:
+    #     <region>-docker.pkg.dev/<project-id>/<repository-name>
+    #     Example: us-central1-docker.pkg.dev/my-project/mlrun-functions
     #
-    # TODO: replace with your GCP Artifact Registry URL
-    url: "us-central1-docker.pkg.dev/YOUR_PROJECT_ID/mlrun-functions"
+    #   AWS ECR:
+    #     <account-id>.dkr.ecr.<region>.amazonaws.com/<repository-name>
+    #     Example: 123456789012.dkr.ecr.us-east-1.amazonaws.com/mlrun-functions
+    #
+    #   Azure Container Registry (ACR):
+    #     <registry-name>.azurecr.io/<repository-name>
+    #     Example: myregistry.azurecr.io/mlrun-functions
+    #
+    #   OpenShift Internal Registry:
+    #     image-registry.openshift-image-registry.svc:5000/<project>/mlrun-functions
+    #
+    #   Generic (Docker Hub, GHCR, Harbor, etc.):
+    #     docker.io/myorg, ghcr.io/myorg, harbor.example.com/mlrun
+    #
+    # TODO: replace with your registry URL
+    url: "REPLACE_WITH_YOUR_REGISTRY_URL"
 
     # Name of a Kubernetes docker-registry secret for pulling/pushing images.
     #
-    # Using GKE Workload Identity - no secret needed. Authentication is handled
-    # by binding a GCP service account (with roles/artifactregistry.writer) to
-    # the Kubernetes service accounts via IAM policy bindings.
-    # See INSTALL.md step 3 for Workload Identity setup.
+    # CLOUD-AGNOSTIC authentication options:
     #
-    # Leave empty when using Workload Identity or node-level credentials.
+    #   1. GKE Workload Identity (GCP) - set to ""
+    #      Bind a GCP SA with roles/artifactregistry.writer to the K8s SAs.
+    #
+    #   2. IRSA - IAM Roles for Service Accounts (AWS EKS) - set to ""
+    #      Annotate K8s SAs with eks.amazonaws.com/role-arn; grant the IAM
+    #      role AmazonEC2ContainerRegistryPowerUser policy.
+    #
+    #   3. Azure AD Workload Identity (AKS) - set to ""
+    #      Annotate K8s SAs with azure.workload.identity/client-id; grant the
+    #      managed identity AcrPush role on the registry.
+    #
+    #   4. OpenShift Internal Registry (Openshift) - set to ""
+    #      Uses automatic service account token, no secret needed.
+    #
+    #   5. Node-level credentials (any cloud) - set to ""
+    #      Cluster nodes authenticate via their instance profile / managed identity.
+    #
+    #   6. Pull secret (any registry, fallback) - set to the secret name
+    #      Create a docker-registry secret in aib-system AND aib-serving:
+    #        kubectl create secret docker-registry <name> \
+    #          --docker-server=<registry-url> \
+    #          --docker-username=<user> \
+    #          --docker-password=<password> \
+    #          --namespace <ns>
+    #
+    # See INSTALL.md step 3 for cloud-specific setup instructions.
     secretName: ""
 
   nuclio:
@@ -646,51 +680,69 @@ mpi-operator:
       memory: 256Mi
 
 # =============================================================================
-# MinIO - DISABLED (installed separately in aib-data namespace)
+# S3-Compatible Object Store (MinIO subchart DISABLED)
 #
-# MinIO is the S3-compatible object store used by all components for artifact storage.
-# It is disabled here because it runs in a separate namespace (aib-data) with its own
-# Helm release, allowing independent scaling, backup, and lifecycle management.
+# This chart does NOT create a MinIO instance. All components are configured
+# to use a pre-existing S3-compatible store in the aib-data namespace.
+# Compatible backends include:
+#   - MinIO (deployed via a separate Helm release)
+#   - An existing AI Store / object store installed in aib-data
+#   - Any other S3-compatible store reachable via cross-namespace DNS
 #
-# SECRETS: MinIO credentials are NOT stored in values.yaml.
-# Instead, create a Kubernetes Secret before deploying:
+# Requirements for the external object store:
+#   - Accessible at <externalHost>:<service.port> from aib-system
+#   - Supports the S3 protocol (PUT/GET/LIST/DELETE)
+#   - Has a bucket named "mlrun" (or matching global.infrastructure.aws.bucketName)
+#   - Credentials available as a Kubernetes Secret in aib-system (see below)
+#
+# SECRETS: Object store credentials are NOT stored in values.yaml.
+# Create them as Kubernetes Secrets before deploying:
 #
 #   kubectl create secret generic minio-credentials \
-#     --from-literal=AWS_ACCESS_KEY_ID=<your-minio-user> \
-#     --from-literal=AWS_SECRET_ACCESS_KEY=<your-minio-password> \
+#     --from-literal=AWS_ACCESS_KEY_ID=<access-key> \
+#     --from-literal=AWS_SECRET_ACCESS_KEY=<secret-key> \
 #     --namespace aib-system
 #
-# This secret is referenced by MLRun API and Jupyter via envFrom.secretRef,
-# and by the Pipelines minio artifact secret via existingSecret.
+#   kubectl create secret generic mlpipeline-minio-artifact \
+#     --from-literal=accesskey=<access-key> \
+#     --from-literal=secretkey=<secret-key> \
+#     --namespace aib-system
+#
+# Both are referenced by the chart via existingSecret (no credentials rendered
+# into the chart from values.yaml).
 # =============================================================================
 minio:
-  # Do not deploy MinIO pods/services from this chart.
+  # Disable the bundled MinIO subchart. Set via `condition: minio.enabled` in
+  # requirements.yaml, so no MinIO pods, PVCs, services, or secrets are created.
   enabled: false
 
-  # Cross-namespace DNS endpoint for MinIO running in aib-data.
-  # Used by the _helpers.tpl template to dynamically resolve MinIO URLs
-  # for all components (MLRun, Jupyter, Pipelines, Argo).
-  # When unset, falls back to "minio.<release-namespace>.svc.cluster.local".
+  # Cross-namespace DNS endpoint for the external object store in aib-data.
+  # Used by _helpers.tpl to resolve the S3 endpoint for MLRun, Jupyter,
+  # Pipelines, and Argo. Supports any S3-compatible store (MinIO, AI Store, etc).
   # Format: <service-name>.<namespace>.svc.cluster.local
+  # Examples:
+  #   minio.aib-data.svc.cluster.local
+  #   ai-store.aib-data.svc.cluster.local
+  #   s3-gateway.aib-data.svc.cluster.local
   externalHost: minio.aib-data.svc.cluster.local
 
-  # Name of a pre-existing Kubernetes Secret containing MinIO credentials.
-  # When set, the chart will NOT create its own minio-credentials secret.
-  # The secret must contain keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-  # Set to "" to let the chart create the secret from rootUser/rootPassword (NOT recommended).
+  # Name of a pre-existing Kubernetes Secret containing S3 credentials.
+  # When set (as below), the chart will NOT create this secret - it MUST be
+  # created manually before installing the chart.
+  # Required keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
   existingSecret: "minio-credentials"
 
-  # Name for the auto-generated secret (only used when existingSecret is empty).
-  credentialsSecretName: "minio-credentials"
-
-  # MinIO root credentials - ONLY used if existingSecret is empty.
-  # In production, always use existingSecret and leave these as placeholders.
+  # Unused when existingSecret is set. Left empty to document that credentials
+  # are sourced exclusively from the external secret (nothing is rendered
+  # from values.yaml into any chart-created Secret).
+  credentialsSecretName: ""
   rootUser: ""
   rootPassword: ""
 
   service:
-    # MinIO API port. Must match the port exposed by MinIO in aib-data.
-    # Standard MinIO port is 9000. Console port (9001) is separate.
+    # API port of the external object store. Must match the port exposed by
+    # the S3 service in aib-data. Standard MinIO port is 9000; AI Store and
+    # other backends may use different ports.
     port: 9000
 
 # =============================================================================
@@ -709,6 +761,9 @@ spark-operator:
     # Webhook service name for the Spark mutating admission webhook.
     serviceName: spark-operator-webhook
 
+    # Number of controller replicas. Must be > 1 to enable PDB.
+    replicas: 1
+
     # Resource limits for the Spark operator controller pod.
     resources:
       requests:
@@ -719,16 +774,19 @@ spark-operator:
         memory: 300Mi
 
     # PodDisruptionBudget for the Spark operator controller.
-    # Ensures the controller remains available during node maintenance or upgrades.
-    # Requires controller.replicas > 1 to be effective.
+    # Disabled because replicas=1; a PDB with minAvailable=1 on a single-replica
+    # deployment would prevent all voluntary evictions. Enable with replicas > 1.
     podDisruptionBudget:
-      enable: true
+      enable: false
       minAvailable: 1
 
   webhook:
     # Enable the mutating admission webhook. Required for injecting
     # volumes, environment variables, and tolerations into Spark pods.
     enable: true
+
+    # Number of webhook replicas. Must be > 1 to enable PDB.
+    replicas: 1
 
     # Resource limits for the Spark webhook pod.
     resources:
@@ -740,8 +798,9 @@ spark-operator:
         memory: 300Mi
 
     # PodDisruptionBudget for the Spark webhook.
+    # Disabled because replicas=1; enable with replicas > 1.
     podDisruptionBudget:
-      enable: true
+      enable: false
       minAvailable: 1
 
   spark:
@@ -836,25 +895,29 @@ pipelines:
       fsGroupChangePolicy: OnRootMismatch
 
   minio:
-    # Pipelines' MinIO integration for storing pipeline artifacts and Argo logs.
-    # The actual MinIO endpoint is resolved dynamically via minio.externalHost.
+    # Pipelines' S3 integration for storing pipeline artifacts and Argo logs.
+    # The actual endpoint is resolved dynamically via minio.externalHost above,
+    # so this works with any S3-compatible store (MinIO, AI Store, etc.).
+    # "enabled: true" only enables rendering the pipelines secrets/configmaps
+    # that reference the external object store - no MinIO pods are created.
     enabled: true
 
-    # Name of a pre-existing Kubernetes Secret containing MinIO credentials.
-    # When set, the chart will NOT create its own mlpipeline-minio-artifact secret.
-    # The secret must contain keys: accesskey, secretkey
+    # Name of a pre-existing Kubernetes Secret containing S3 credentials.
+    # When set (as below), the chart will NOT create this secret - it MUST be
+    # created manually before installing the chart.
+    # Required keys: accesskey, secretkey
     existingSecret: "mlpipeline-minio-artifact"
 
-    # Credentials below are ONLY used if existingSecret is empty.
-    # In production, always use existingSecret and leave these as placeholders.
+    # Unused when existingSecret is set. Left empty to document that credentials
+    # are sourced exclusively from the external secret.
     accessKey: ""
     secretKey: ""
 
-    # MinIO API port. Must match minio.service.port above and the actual MinIO deployment.
+    # API port of the external object store. Must match minio.service.port above.
     endpointPort: "9000"
 
     # S3 bucket where pipeline artifacts are stored.
-    # Must exist in MinIO before running pipelines.
+    # Must exist in the external object store before running pipelines.
     bucket: "mlrun"
 
   # Container images for all Kubeflow Pipelines components.

@@ -1,5 +1,21 @@
 # MLRun CE - Production Readiness Report
 
+## Cloud Portability
+
+This chart is **cloud-agnostic** and runs on:
+
+| Cloud | Status | Notes |
+|-------|--------|-------|
+| GCP (GKE) | Supported | Uses Workload Identity for registry auth |
+| AWS (EKS) | Supported | Uses IRSA for registry auth |
+| Azure (AKS) | Supported | Uses AD Workload Identity for registry auth |
+| Red Hat OpenShift | Supported | Requires `nonroot-v2` SCC binding (chart uses hardcoded UIDs that conflict with default `restricted-v2` SCC) |
+| On-prem / generic K8s | Supported | Uses pull secret for registry auth |
+
+See `INSTALL.md` step 3 for cloud-specific setup.
+
+---
+
 ## Fixed via values.yaml (chart supports these)
 
 These issues were resolved in `values.yaml` using configuration options that the chart subcharts already support. No chart template modifications were needed.

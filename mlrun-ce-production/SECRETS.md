@@ -106,49 +106,88 @@ kubectl get secret mlpipeline-minio-artifact -n aib-system -o jsonpath='{.data.a
 
 ---
 
-### 3. GCP Artifact Registry Authentication (Workload Identity - no secret)
+### 3. Container Registry Authentication (Cloud-Agnostic)
 
 | | |
 |---|---|
-| **Namespace** | N/A (no Kubernetes Secret required) |
-| **Type** | GKE Workload Identity |
-| **Purpose** | Authenticates to GCP Artifact Registry for pushing function images (during build) and pulling them (during function deployment). |
+| **Namespace** | Depends on chosen approach (see below) |
+| **Purpose** | Authenticates to the container registry for pushing function images (Nuclio Dashboard) and pulling them (function pods) |
 
-This deployment uses **GKE Workload Identity** instead of stored credentials. No `docker-registry` secret is needed. Authentication is handled by binding a GCP service account (with `roles/artifactregistry.writer`) to the Kubernetes service accounts via IAM.
+The chart supports multiple authentication methods across clouds. Choose one:
 
-**Affected components:**
+#### Option A: Cloud-Native Identity (recommended - no secret required)
 
-| Component | Namespace | What it does |
-|-----------|-----------|-------------|
-| Nuclio Dashboard | `aib-system` | Pushes built function container images to GCP Artifact Registry |
-| MLRun API | `aib-system` | Configures Nuclio builds with registry URL when deploying serving functions |
-| Nuclio Function Pods | `aib-serving` | Pulls function container images from GCP Artifact Registry at runtime |
+For managed Kubernetes services, use the native workload identity feature. **No `Secret` resource is created.** Authentication is handled via service account annotations and IAM.
 
-**Setup:**
+| Cloud | Mechanism | SA Annotation |
+|-------|-----------|---------------|
+| **GCP / GKE** | Workload Identity | `iam.gke.io/gcp-service-account=<sa>@<project>.iam.gserviceaccount.com` |
+| **AWS / EKS** | IRSA | `eks.amazonaws.com/role-arn=arn:aws:iam::<account>:role/<role>` |
+| **Azure / AKS** | Azure AD Workload Identity | `azure.workload.identity/client-id=<client-id>` + label `azure.workload.identity/use=true` |
+| **OpenShift** | Built-in SA tokens | None (automatic) |
 
-See `INSTALL.md` step 3 for the full Workload Identity configuration (GCP SA creation, IAM bindings, K8s SA annotations).
+The SAs that need the annotation:
+- `nuclio` in `aib-system` (needs push)
+- `default` in `aib-serving` (needs pull)
+
+See `INSTALL.md` step 3 for the full cloud-specific configuration (3.A GCP, 3.B AWS, 3.C Azure, 3.D OpenShift).
 
 **values.yaml configuration:**
 
 ```yaml
 global:
   registry:
-    url: "us-central1-docker.pkg.dev/your-gcp-project/mlrun-functions"
-    secretName: ""     # empty = Workload Identity, no secret
+    url: "<cloud-specific-registry-url>"
+    secretName: ""     # empty = use native identity
 ```
 
-**Verify:**
+#### Option B: Pull Secret (fallback for any registry)
+
+For clusters without workload identity (on-prem, generic Kubernetes) or when using external registries like Docker Hub, GHCR, or Harbor.
+
+| | |
+|---|---|
+| **Namespace** | `aib-system` **AND** `aib-serving` (both required) |
+| **Type** | `kubernetes.io/dockerconfigjson` |
+| **Required keys** | `.dockerconfigjson` (auto-created by `kubectl create secret docker-registry`) |
+
+**Create:**
 
 ```bash
-# Check Workload Identity annotation on Nuclio SA
-kubectl get serviceaccount nuclio -n aib-system \
-  -o jsonpath='{.metadata.annotations.iam\.gke\.io/gcp-service-account}'
-# Expected: mlrun-registry@<project-id>.iam.gserviceaccount.com
+for NS in aib-system aib-serving; do
+  kubectl create secret docker-registry registry-credentials \
+    --docker-server=<registry-url> \
+    --docker-username=<user> \
+    --docker-password=<password> \
+    --namespace "${NS}"
+done
+```
 
-# Check default SA in aib-serving
-kubectl get serviceaccount default -n aib-serving \
-  -o jsonpath='{.metadata.annotations.iam\.gke\.io/gcp-service-account}'
-# Expected: mlrun-registry@<project-id>.iam.gserviceaccount.com
+**values.yaml configuration:**
+
+```yaml
+global:
+  registry:
+    url: "<registry-url>/mlrun-functions"
+    secretName: "registry-credentials"
+```
+
+**Components that use the registry credentials:**
+
+| Component | Namespace | What it does with it |
+|-----------|-----------|---------------------|
+| Nuclio Dashboard | `aib-system` | Pushes built function container images to the registry |
+| MLRun API | `aib-system` | Configures Nuclio builds with the registry URL when deploying serving functions |
+| Nuclio Function Pods | `aib-serving` | Pulls function container images from the registry at runtime |
+
+**Verify the setup:**
+
+```bash
+# Check the K8s SA has the expected annotation or imagePullSecret
+kubectl get serviceaccount nuclio -n aib-system -o yaml
+
+# After Helm install, check that a test push works by watching Nuclio build logs
+kubectl logs -n aib-system deploy/nuclio-dashboard -f
 ```
 
 ---
@@ -201,7 +240,7 @@ kubectl get serviceaccount default -n aib-serving \
 |-------------|-----------|-----------------|------|---------|
 | `minio-credentials` | `aib-system` | **Yes** | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | MLRun API, Jupyter, Job Pods |
 | `mlpipeline-minio-artifact` | `aib-system` | **Yes** | `accesskey`, `secretkey` | Pipelines API, Pipelines UI, Argo, Viewer Pods |
-| GCP Artifact Registry | N/A | No (Workload Identity) | N/A | Nuclio Dashboard, MLRun API, Function Pods |
+| Registry credentials | `aib-system` + `aib-serving` | **Depends** - Yes (pull secret) or No (cloud-native identity: GKE WI / IRSA / Azure WI / OpenShift) | `.dockerconfigjson` (if pull secret) | Nuclio Dashboard, MLRun API, Function Pods |
 | `mysql-secret` | `aib-system` | No (auto) | `username`, `password` | Pipelines API, Metadata gRPC |
 | `mlrun-db` | `aib-system` | No (auto) | `dsn`, `oldDsn` | MLRun API |
 
@@ -236,22 +275,27 @@ kubectl rollout restart deployment/ml-pipeline-ui -n aib-system
 kubectl rollout restart deployment/workflow-controller -n aib-system
 ```
 
-To rotate GCP Artifact Registry access (Workload Identity):
+To rotate registry credentials:
+
+**Cloud-native identity (GCP/AWS/Azure/OpenShift):** No secret to rotate. Rotate at the cloud IAM level (rotate the underlying service account/IAM role key, update federated credentials, etc.), then restart Nuclio:
 
 ```bash
-# No secret rotation needed. To change the GCP service account:
+kubectl rollout restart deployment/nuclio-dashboard -n aib-system
+```
 
-# 1. Create a new GCP SA and grant it artifactregistry.writer
-# 2. Update the Workload Identity bindings
-# 3. Re-annotate the Kubernetes service accounts
-kubectl annotate serviceaccount nuclio \
-  --namespace aib-system --overwrite \
-  iam.gke.io/gcp-service-account=<new-sa>@<project>.iam.gserviceaccount.com
+**Pull secret (fallback):**
 
-kubectl annotate serviceaccount default \
-  --namespace aib-serving --overwrite \
-  iam.gke.io/gcp-service-account=<new-sa>@<project>.iam.gserviceaccount.com
+```bash
+# 1. Update the secret in both namespaces
+for NS in aib-system aib-serving; do
+  kubectl create secret docker-registry registry-credentials \
+    --docker-server=<registry-url> \
+    --docker-username=<user> \
+    --docker-password=<new-password> \
+    --namespace "${NS}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+done
 
-# 4. Restart Nuclio to pick up the new identity
+# 2. Restart Nuclio to pick up new credentials
 kubectl rollout restart deployment/nuclio-dashboard -n aib-system
 ```

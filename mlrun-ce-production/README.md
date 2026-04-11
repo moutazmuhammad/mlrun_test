@@ -2,13 +2,25 @@
 
 ## Overview
 
-MLRun CE (Community Edition) is an umbrella Helm chart that deploys a complete MLOps platform on Kubernetes. This production configuration splits the deployment across multiple namespaces:
+MLRun CE (Community Edition) is an umbrella Helm chart that deploys a complete MLOps platform on Kubernetes. This production configuration is **cloud-agnostic** and runs on any Kubernetes distribution: GKE, EKS, AKS, OpenShift, or on-premise Kubernetes.
+
+Deployment layout across three namespaces:
 
 | Namespace | Components |
 |-----------|------------|
 | `aib-system` | MLRun, Nuclio, Jupyter, Kubeflow Pipelines, Spark Operator, MPI Operator |
 | `aib-data` | MinIO, Kafka (installed from separate charts) |
 | `aib-serving` | Nuclio serverless functions (runtime only) |
+
+**Cloud portability:**
+
+| Cloud | Registry | Auth Method | Storage Class |
+|-------|----------|-------------|---------------|
+| GCP (GKE) | Artifact Registry | Workload Identity | `premium-rwo` |
+| AWS (EKS) | ECR | IRSA | `gp3` |
+| Azure (AKS) | ACR | AD Workload Identity | `managed-csi` |
+| OpenShift | Internal Registry | Automatic SA tokens | `ocs-storagecluster-ceph-rbd` |
+| On-prem | Any (Harbor, Docker Hub, etc.) | Pull secret | `local-path`, `nfs-client`, etc. |
 
 All services use **ClusterIP** (no NodePort, no LoadBalancer). Access is expected through an ingress controller or port-forwarding.
 

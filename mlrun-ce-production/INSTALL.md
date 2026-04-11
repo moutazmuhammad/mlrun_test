@@ -23,13 +23,31 @@ This guide walks through the complete installation of the MLRun CE platform from
 
 ## 1. Prerequisites
 
+### Supported Platforms
+
+This chart is **cloud-agnostic** and has been validated against:
+
+| Platform | Notes |
+|----------|-------|
+| **Google Kubernetes Engine (GKE)** | Use Workload Identity for registry auth |
+| **Amazon EKS** | Use IRSA (IAM Roles for Service Accounts) for registry auth |
+| **Azure AKS** | Use Azure AD Workload Identity for registry auth |
+| **Red Hat OpenShift** | Requires `nonroot-v2` SCC for hardcoded UIDs; use internal registry |
+| **On-prem / generic Kubernetes** | Use pull secret for registry auth |
+
 ### Tools
 
 | Tool | Minimum Version | Check Command |
 |------|-----------------|---------------|
-| kubectl | 1.24+ | `kubectl version --client` |
+| kubectl / oc | 1.24+ / 4.12+ | `kubectl version --client` or `oc version` |
 | Helm | 3.10+ | `helm version` |
 | A running Kubernetes cluster | 1.24+ | `kubectl cluster-info` |
+
+Plus a cloud-specific CLI if using native identity for registry auth:
+- `gcloud` for GCP
+- `aws` + `eksctl` for AWS
+- `az` for Azure
+- `oc` for OpenShift
 
 ### Cluster Resources
 
@@ -58,7 +76,31 @@ A StorageClass must be available for dynamic PVC provisioning. Check available c
 kubectl get storageclass
 ```
 
-Note the name of your default or preferred StorageClass - you will need it in step 6.
+Note the name of your default or preferred StorageClass - you will need it in step 6. Common production StorageClasses by platform:
+
+| Platform | Typical StorageClass |
+|----------|----------------------|
+| GCP / GKE | `premium-rwo`, `standard-rwo` |
+| AWS / EKS | `gp3`, `gp2`, `io2` |
+| Azure / AKS | `managed-csi`, `managed-csi-premium`, `managed-premium` |
+| OpenShift | `ocs-storagecluster-ceph-rbd`, `thin-csi` |
+| On-prem | `local-path`, `nfs-client`, `rook-ceph-block`, `longhorn` |
+
+### OpenShift-specific Prerequisites
+
+If deploying to OpenShift, you must grant the `nonroot-v2` SCC to the service accounts because the chart uses hardcoded UIDs (Jupyter: 1000, MLRun DB: 999, Pipelines MySQL: 1001) that conflict with OpenShift's default `restricted-v2` SCC that assigns random UIDs per namespace.
+
+Do this **after** creating the namespaces (step 2) and **before** installing the chart (step 7):
+
+```bash
+oc adm policy add-scc-to-user nonroot-v2 -z default -n aib-system
+oc adm policy add-scc-to-user nonroot-v2 -z mlrun-jupyter -n aib-system
+oc adm policy add-scc-to-user nonroot-v2 -z nuclio -n aib-system
+oc adm policy add-scc-to-user nonroot-v2 -z mysql -n aib-system
+oc adm policy add-scc-to-user nonroot-v2 -z sparkapp -n aib-system
+oc adm policy add-scc-to-user nonroot-v2 -z default -n aib-data
+oc adm policy add-scc-to-user nonroot-v2 -z default -n aib-serving
+```
 
 ---
 
@@ -93,18 +135,25 @@ aib-system    Active   ...
 
 ---
 
-## 3. Configure Container Registry (GCP Artifact Registry)
+## 3. Configure Container Registry (Cloud-Agnostic)
 
-Nuclio needs a container registry to build and push function images. This guide uses **GCP Artifact Registry**.
+Nuclio needs a container registry to build and push function images. The chart works with any OCI-compatible registry: GCP Artifact Registry, AWS ECR, Azure Container Registry, OpenShift internal registry, Harbor, Docker Hub, etc.
 
-### 3.1 Create a Docker Repository in Artifact Registry
+Pick the section that matches your cloud. After setup, you will update `values.yaml` with the registry URL and (optionally) a secret name.
 
-If you haven't already, create a Docker repository in GCP:
+Two things are needed regardless of cloud:
+- **Push access** for the Nuclio Dashboard pod in `aib-system` (builds and pushes function images)
+- **Pull access** for function pods in `aib-serving` (runs the built images)
+
+---
+
+### 3.A Google Cloud - Artifact Registry with Workload Identity
+
+**Step 1** - Create the Docker repository:
 
 ```bash
-# Set your variables
 GCP_PROJECT="your-gcp-project-id"
-GCP_REGION="us-central1"           # choose your region
+GCP_REGION="us-central1"
 REPO_NAME="mlrun-functions"
 
 gcloud artifacts repositories create ${REPO_NAME} \
@@ -113,114 +162,375 @@ gcloud artifacts repositories create ${REPO_NAME} \
   --description="MLRun/Nuclio function images"
 ```
 
-Your registry URL will be: `${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO_NAME}`
+Registry URL: `${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO_NAME}`
 
-### 3.2 Set Up Workload Identity
-
-Workload Identity lets Kubernetes service accounts authenticate to GCP services (like Artifact Registry) via IAM - no JSON keys, no stored credentials.
-
-**Step 1** - Ensure Workload Identity is enabled on your GKE cluster:
+**Step 2** - Ensure Workload Identity is enabled on the cluster:
 
 ```bash
-# Check if already enabled
-gcloud container clusters describe <CLUSTER_NAME> \
-  --zone <ZONE> \
-  --format="value(workloadIdentityConfig.workloadPool)"
-
-# If empty, enable it (requires cluster update)
 gcloud container clusters update <CLUSTER_NAME> \
   --zone <ZONE> \
   --workload-pool="${GCP_PROJECT}.svc.id.goog"
 ```
 
-**Step 2** - Create a GCP service account:
+**Step 3** - Create a GCP SA and grant Artifact Registry Writer:
 
 ```bash
 GCP_SA_NAME="mlrun-registry"
 
 gcloud iam service-accounts create ${GCP_SA_NAME} \
   --display-name="MLRun Artifact Registry access"
-```
 
-**Step 3** - Grant it Artifact Registry Writer role (push + pull):
-
-```bash
 gcloud projects add-iam-policy-binding ${GCP_PROJECT} \
   --member="serviceAccount:${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com" \
   --role="roles/artifactregistry.writer"
 ```
 
-**Step 4** - Bind the GCP SA to the Kubernetes service accounts that need registry access:
+**Step 4** - Bind the GCP SA to Kubernetes SAs:
 
 ```bash
-# Nuclio dashboard (builds and pushes images) - in aib-system
 gcloud iam service-accounts add-iam-policy-binding \
   ${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com \
   --role="roles/iam.workloadIdentityUser" \
   --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[aib-system/nuclio]"
 
-# Default SA in aib-serving (function pods pull images)
 gcloud iam service-accounts add-iam-policy-binding \
   ${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com \
   --role="roles/iam.workloadIdentityUser" \
   --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[aib-serving/default]"
 ```
 
-**Step 5** - Annotate the Kubernetes service accounts (after Helm install in step 7, or pre-create them):
+**Step 5** - Pre-create and annotate the Kubernetes SAs:
 
 ```bash
-# Nuclio SA in aib-system
+kubectl create serviceaccount nuclio --namespace aib-system
+
 kubectl annotate serviceaccount nuclio \
   --namespace aib-system \
   iam.gke.io/gcp-service-account=${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com
 
-# Default SA in aib-serving
 kubectl annotate serviceaccount default \
   --namespace aib-serving \
   iam.gke.io/gcp-service-account=${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com
 ```
 
-> **Note:** The `nuclio` service account is created by the Helm chart. If annotating before install, pre-create it:
-> ```bash
-> kubectl create serviceaccount nuclio --namespace aib-system
-> ```
-
-**Step 6** - In `values.yaml`, the registry secret is already set to empty (Workload Identity needs no secret):
+**Step 6** - Set in `values.yaml`:
 
 ```yaml
 global:
   registry:
     url: "us-central1-docker.pkg.dev/your-gcp-project/mlrun-functions"
-    secretName: ""     # no secret needed with Workload Identity
+    secretName: ""   # Workload Identity
 ```
 
-### 3.3 Verify Workload Identity and Registry Access
+---
+
+### 3.B AWS - ECR with IRSA (IAM Roles for Service Accounts)
+
+**Step 1** - Create the ECR repository:
 
 ```bash
-# Verify Workload Identity is configured on the cluster
-gcloud container clusters describe <CLUSTER_NAME> \
-  --zone <ZONE> \
-  --format="value(workloadIdentityConfig.workloadPool)"
-# Expected: <project-id>.svc.id.goog
+AWS_REGION="us-east-1"
+AWS_ACCOUNT="123456789012"
+REPO_NAME="mlrun-functions"
 
-# Verify IAM binding exists
-gcloud iam service-accounts get-iam-policy \
-  ${GCP_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com \
-  --format="table(bindings.role,bindings.members)"
+aws ecr create-repository \
+  --repository-name ${REPO_NAME} \
+  --region ${AWS_REGION}
+```
 
-# After Helm install, verify the SA annotation
-kubectl get serviceaccount nuclio -n aib-system -o jsonpath='{.metadata.annotations.iam\.gke\.io/gcp-service-account}'
-# Expected: mlrun-registry@<project-id>.iam.gserviceaccount.com
+Registry URL: `${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}`
 
-# Test push from your machine (for validation)
-gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev
-docker pull busybox:latest
-docker tag busybox:latest ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO_NAME}/test:latest
-docker push ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO_NAME}/test:latest
+**Step 2** - Enable the OIDC provider on your EKS cluster (if not already):
 
-# Clean up test image
-gcloud artifacts docker images delete \
-  ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO_NAME}/test:latest --quiet
+```bash
+eksctl utils associate-iam-oidc-provider \
+  --cluster <CLUSTER_NAME> \
+  --region ${AWS_REGION} \
+  --approve
+```
+
+**Step 3** - Create an IAM policy with ECR push/pull permissions:
+
+```bash
+cat > ecr-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:GetRepositoryPolicy",
+        "ecr:DescribeRepositories",
+        "ecr:ListImages",
+        "ecr:DescribeImages",
+        "ecr:BatchGetImage",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+
+aws iam create-policy \
+  --policy-name MLRunECRAccess \
+  --policy-document file://ecr-policy.json
+```
+
+**Step 4** - Create IAM roles bound to the K8s SAs:
+
+```bash
+eksctl create iamserviceaccount \
+  --cluster <CLUSTER_NAME> \
+  --namespace aib-system \
+  --name nuclio \
+  --attach-policy-arn arn:aws:iam::${AWS_ACCOUNT}:policy/MLRunECRAccess \
+  --approve \
+  --region ${AWS_REGION}
+
+eksctl create iamserviceaccount \
+  --cluster <CLUSTER_NAME> \
+  --namespace aib-serving \
+  --name default \
+  --attach-policy-arn arn:aws:iam::${AWS_ACCOUNT}:policy/MLRunECRAccess \
+  --override-existing-serviceaccounts \
+  --approve \
+  --region ${AWS_REGION}
+```
+
+This creates the K8s service accounts with the `eks.amazonaws.com/role-arn` annotation automatically.
+
+**Step 5** - Set in `values.yaml`:
+
+```yaml
+global:
+  registry:
+    url: "123456789012.dkr.ecr.us-east-1.amazonaws.com/mlrun-functions"
+    secretName: ""   # IRSA - no secret needed
+```
+
+> **Note:** ECR requires tokens that expire every 12 hours. With IRSA, kubelet refreshes them automatically via the `ecr-credential-provider`. Ensure your EKS cluster uses Kubernetes 1.27+ for seamless refresh.
+
+---
+
+### 3.C Azure - ACR with Azure AD Workload Identity
+
+**Step 1** - Create the ACR:
+
+```bash
+RESOURCE_GROUP="mlrun-rg"
+ACR_NAME="mlrunregistry"
+LOCATION="eastus"
+
+az acr create \
+  --resource-group ${RESOURCE_GROUP} \
+  --name ${ACR_NAME} \
+  --sku Standard \
+  --location ${LOCATION}
+```
+
+Registry URL: `${ACR_NAME}.azurecr.io/mlrun-functions`
+
+**Step 2** - Enable Workload Identity on the AKS cluster:
+
+```bash
+az aks update \
+  --resource-group ${RESOURCE_GROUP} \
+  --name <CLUSTER_NAME> \
+  --enable-oidc-issuer \
+  --enable-workload-identity
+```
+
+**Step 3** - Create a managed identity and grant AcrPush role:
+
+```bash
+IDENTITY_NAME="mlrun-registry"
+
+az identity create \
+  --name ${IDENTITY_NAME} \
+  --resource-group ${RESOURCE_GROUP}
+
+CLIENT_ID=$(az identity show \
+  --name ${IDENTITY_NAME} \
+  --resource-group ${RESOURCE_GROUP} \
+  --query clientId -o tsv)
+
+PRINCIPAL_ID=$(az identity show \
+  --name ${IDENTITY_NAME} \
+  --resource-group ${RESOURCE_GROUP} \
+  --query principalId -o tsv)
+
+ACR_ID=$(az acr show --name ${ACR_NAME} --query id -o tsv)
+
+az role assignment create \
+  --assignee ${PRINCIPAL_ID} \
+  --role AcrPush \
+  --scope ${ACR_ID}
+```
+
+**Step 4** - Bind the managed identity to K8s SAs via federated credentials:
+
+```bash
+OIDC_ISSUER=$(az aks show \
+  --resource-group ${RESOURCE_GROUP} \
+  --name <CLUSTER_NAME> \
+  --query oidcIssuerProfile.issuerUrl -o tsv)
+
+# Nuclio SA
+az identity federated-credential create \
+  --name mlrun-nuclio \
+  --identity-name ${IDENTITY_NAME} \
+  --resource-group ${RESOURCE_GROUP} \
+  --issuer ${OIDC_ISSUER} \
+  --subject system:serviceaccount:aib-system:nuclio
+
+# Default SA in aib-serving
+az identity federated-credential create \
+  --name mlrun-functions \
+  --identity-name ${IDENTITY_NAME} \
+  --resource-group ${RESOURCE_GROUP} \
+  --issuer ${OIDC_ISSUER} \
+  --subject system:serviceaccount:aib-serving:default
+```
+
+**Step 5** - Pre-create and annotate K8s SAs:
+
+```bash
+kubectl create serviceaccount nuclio --namespace aib-system
+
+kubectl annotate serviceaccount nuclio \
+  --namespace aib-system \
+  azure.workload.identity/client-id=${CLIENT_ID}
+
+kubectl label serviceaccount nuclio \
+  --namespace aib-system \
+  azure.workload.identity/use=true
+
+kubectl annotate serviceaccount default \
+  --namespace aib-serving \
+  azure.workload.identity/client-id=${CLIENT_ID}
+
+kubectl label serviceaccount default \
+  --namespace aib-serving \
+  azure.workload.identity/use=true
+```
+
+**Step 6** - Set in `values.yaml`:
+
+```yaml
+global:
+  registry:
+    url: "mlrunregistry.azurecr.io/mlrun-functions"
+    secretName: ""   # Workload Identity
+```
+
+---
+
+### 3.D OpenShift - Internal Registry
+
+OpenShift ships with a built-in image registry and automatically mounts service account tokens for it.
+
+**Step 1** - Expose the internal registry (if not already):
+
+```bash
+oc patch configs.imageregistry.operator.openshift.io/cluster \
+  --type merge \
+  -p '{"spec":{"defaultRoute":true}}'
+```
+
+**Step 2** - Create an image stream in the aib-system project:
+
+```bash
+oc new-project aib-system 2>/dev/null || oc project aib-system
+
+oc create imagestream mlrun-functions -n aib-system
+```
+
+**Step 3** - Grant cross-namespace pull permission to `aib-serving`:
+
+```bash
+oc policy add-role-to-user system:image-puller \
+  system:serviceaccount:aib-serving:default \
+  --namespace=aib-system
+```
+
+**Step 4** - Grant push permission to the Nuclio SA in `aib-system`:
+
+```bash
+oc create serviceaccount nuclio -n aib-system
+
+oc policy add-role-to-user system:image-builder \
+  system:serviceaccount:aib-system:nuclio \
+  --namespace=aib-system
+```
+
+**Step 5** - Set in `values.yaml`:
+
+```yaml
+global:
+  registry:
+    url: "image-registry.openshift-image-registry.svc:5000/aib-system/mlrun-functions"
+    secretName: ""   # OpenShift SA tokens handle auth automatically
+```
+
+> **OpenShift SCC note:** The chart contains hardcoded UIDs (Jupyter: 1000, MLRun DB: 999, Pipelines MySQL: 1001) that conflict with OpenShift's default `restricted-v2` SCC (which assigns random UIDs). You need to grant the `nonroot-v2` SCC to the service accounts:
+>
+> ```bash
+> oc adm policy add-scc-to-user nonroot-v2 -z default -n aib-system
+> oc adm policy add-scc-to-user nonroot-v2 -z mlrun-jupyter -n aib-system
+> oc adm policy add-scc-to-user nonroot-v2 -z nuclio -n aib-system
+> oc adm policy add-scc-to-user nonroot-v2 -z mysql -n aib-system
+> oc adm policy add-scc-to-user nonroot-v2 -z sparkapp -n aib-system
+> ```
+
+---
+
+### 3.E Fallback - Any Registry via Pull Secret
+
+If none of the cloud-native options above apply (e.g. on-prem clusters, or using Docker Hub / Harbor / GHCR), use a pull secret:
+
+```bash
+REGISTRY_URL="harbor.example.com"      # or docker.io, ghcr.io, etc.
+REGISTRY_USER="your-user"
+REGISTRY_PASSWORD="your-password"
+
+for NS in aib-system aib-serving; do
+  kubectl create secret docker-registry registry-credentials \
+    --docker-server="${REGISTRY_URL}" \
+    --docker-username="${REGISTRY_USER}" \
+    --docker-password="${REGISTRY_PASSWORD}" \
+    --namespace "${NS}"
+done
+```
+
+Set in `values.yaml`:
+
+```yaml
+global:
+  registry:
+    url: "harbor.example.com/mlrun-functions"
+    secretName: "registry-credentials"
+```
+
+---
+
+### 3.F Verify Registry Access
+
+Regardless of which option you chose, verify the K8s SA has the right annotation and can authenticate:
+
+```bash
+# Check annotation (should match the chosen cloud)
+kubectl get serviceaccount nuclio -n aib-system -o yaml | grep -E "annotations|labels" -A 5
+
+# After Helm install, check that a test push works by deploying a simple Nuclio function
+# from a Jupyter notebook and watching the build logs:
+kubectl logs -n aib-system deploy/nuclio-dashboard -f
 ```
 
 ---
@@ -477,9 +787,9 @@ grep -n "TODO" mlrun-ce-production/values.yaml
 
 | Value | What to Set |
 |-------|-------------|
-| `global.registry.url` | Your GCP Artifact Registry URL (e.g. `us-central1-docker.pkg.dev/my-project/mlrun-functions`) |
-| `global.registry.secretName` | `"gcr-registry-credentials"` (JSON key) or `""` (Workload Identity) - see step 3 |
-| All `storageClass` fields | Your cluster's StorageClass name |
+| `global.registry.url` | Registry URL from step 3 (GCP / AWS / Azure / OpenShift / generic) |
+| `global.registry.secretName` | `""` when using cloud-native identity (step 3.A-D); `"registry-credentials"` when using pull secret (step 3.E) |
+| All `storageClass` fields | Your cluster's StorageClass name (see table in Prerequisites) |
 
 ---
 
