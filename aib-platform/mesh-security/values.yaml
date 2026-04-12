@@ -1,0 +1,126 @@
+meshSecurity:
+  ## mTLS configuration
+  mtls:
+    enabled: true
+    mode: STRICT  # STRICT | PERMISSIVE | DISABLE
+    namespaces: []
+    #   - name: my-namespace
+
+  ## Authorization policies (fine-grained)
+  authorizationPolicies: []
+  #   - name: model-api
+  #     namespace: my-namespace
+  #     action: ALLOW    # ALLOW | DENY | CUSTOM
+  #     provider: my-ext-authz    # optional: for CUSTOM action only
+  #     selector:
+  #       app: model-api
+  #     rules:
+  #       - from:
+  #           - namespaces:
+  #               - my-namespace
+  #             notNamespaces:
+  #               - untrusted-ns
+  #             principals:
+  #               - cluster.local/ns/my-namespace/sa/model-client
+  #             notPrincipals:
+  #               - cluster.local/ns/my-namespace/sa/blocked-sa
+  #             requestPrincipals:            # JWT-based identity
+  #               - "https://auth.issuer.com/*"
+  #             ipBlocks:                      # IP-based rules
+  #               - "10.0.0.0/8"
+  #             notIpBlocks:
+  #               - "10.0.99.0/24"
+  #         to:
+  #           - ports:
+  #               - "8080"
+  #             notPorts:
+  #               - "9090"
+  #             methods:
+  #               - GET
+  #               - POST
+  #             notMethods:
+  #               - DELETE
+  #             paths:
+  #               - "/api/v1/*"
+  #             notPaths:
+  #               - "/api/v1/admin/*"
+  #             hosts:
+  #               - "model-api.aib.vodafone.com"
+  #         when:                              # conditional rules
+  #           - key: request.headers[x-custom-token]
+  #             values: ["valid-token"]
+  #           - key: request.auth.claims[role]  # JWT claim matching
+  #             values: ["admin", "editor"]
+
+  ## Extension providers (Istio meshConfig)
+  ## Generates a reference ConfigMap with the extensionProvider config.
+  ## Merge this into your Istio mesh config (istio ConfigMap or IstioOperator).
+  ## See: https://istio.io/latest/docs/tasks/security/authorization/authz-custom/
+  extensionProviders: []
+  #   - name: oauth2-proxy
+  #     enabled: true
+  #     namespace: istio-system              # where the ConfigMap is created
+  #     service: "oauth2-proxy.oauth2-proxy.svc.cluster.local"
+  #     port: 4180
+  #     includeRequestHeadersInCheck:
+  #       - authorization
+  #       - cookie
+  #     headersToUpstreamOnAllow:
+  #       - authorization
+  #       - path
+  #       - x-auth-request-user
+  #       - x-auth-request-email
+  #       - x-auth-request-access-token
+  #     headersToDownstreamOnAllow:
+  #       - set-cookie
+  #     headersToDownstreamOnDeny:
+  #       - content-type
+  #       - set-cookie
+  #     # failOpen: false                    # optional: fail open if ext authz is unreachable
+  #     # statusOnError: "403"               # optional: HTTP status when ext authz errors
+  #     # pathPrefix: "/oauth2"              # optional: path prefix for authz check requests
+
+  ## External authorization policies (per-service)
+  ## Each entry creates an AuthorizationPolicy with action: CUSTOM
+  ## targeting a specific workload. Provider must match an extensionProvider above.
+  externalAuthorization: []
+  #   - name: ext-authz-app1          # policy name
+  #     enabled: true
+  #     namespace: my-namespace        # namespace of the target workload
+  #     provider: oauth2-proxy         # must match extensionProvider name in meshConfig
+  #     selector:                      # target specific workload (per-service)
+  #       app: my-app
+  #     rules: []                      # empty = all requests go through ext authz
+  #     # rules:                       # optional: limit which requests need ext authz
+  #     #   - to:
+  #     #       - paths:
+  #     #           - "/api/*"
+  #     #         methods:
+  #     #           - GET
+  #     #           - POST
+  #     #     when:                    # optional: conditional ext authz
+  #     #       - key: request.headers[x-skip-auth]
+  #     #         notValues: ["true"]
+
+  ## Request authentication (JWT)
+  requestAuthentication: []
+  #   - name: jwt-auth
+  #     namespace: my-namespace
+  #     selector:
+  #       app: model-api
+  #     jwtRules:
+  #       - issuer: "https://auth.aib.vodafone.com"
+  #         jwksUri: "https://auth.aib.vodafone.com/.well-known/jwks.json"
+  #         forwardOriginalToken: true
+  #         outputPayloadToHeader: x-jwt-payload
+
+  ## Rate limiting per namespace (local rate limit via EnvoyFilter)
+  rateLimiting: []
+  #   - name: ai-namespace-ratelimit
+  #     namespace: ai-namespace
+  #     selector:                     # optional: target specific workloads
+  #       app: model-api
+  #     maxTokens: 100                # max burst size
+  #     tokensPerFill: 50             # tokens added per interval
+  #     fillInterval: "60s"           # refill interval
+  #     statusCode: 429               # optional: HTTP status on rate limit (default 429)

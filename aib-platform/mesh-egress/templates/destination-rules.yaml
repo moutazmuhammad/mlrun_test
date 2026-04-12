@@ -1,0 +1,45 @@
+{{- if and .Values.meshEgress.gateway .Values.meshEgress.gateway.enabled }}
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ .Values.meshEgress.gateway.name | default "platform-egress-gateway" }}-dr
+  namespace: {{ .Values.meshEgress.namespace | default "istio-system" }}
+  labels:
+    {{- include "mesh-egress.labels" . | nindent 4 }}
+spec:
+  host: istio-egressgateway.{{ .Values.meshEgress.gateway.serviceNamespace | default "istio-system" }}.svc.cluster.local
+  subsets:
+    {{- range .Values.meshEgress.services }}
+    {{- if .enabled }}
+    - name: {{ .name }}
+      labels:
+        istio: egressgateway
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- if and .Values.meshEgress.gateway .Values.meshEgress.gateway.enabled }}
+{{- range .Values.meshEgress.services }}
+{{- if and .enabled .tls .tls.mode }}
+---
+## TLS origination — egress gateway originates TLS to external host
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ .name }}-tls-origination-dr
+  namespace: {{ $.Values.meshEgress.namespace | default "istio-system" }}
+  labels:
+    {{- include "mesh-egress.labels" $ | nindent 4 }}
+spec:
+  host: {{ .host }}
+  trafficPolicy:
+    portLevelSettings:
+      - port:
+          number: {{ .port }}
+        tls:
+          mode: {{ .tls.mode }}
+          {{- if .tls.sni }}
+          sni: {{ .tls.sni }}
+          {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

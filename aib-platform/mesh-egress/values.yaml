@@ -1,0 +1,32 @@
+meshEgress:
+  ## Namespace where CRs are created (Gateway, VirtualService, DestinationRule)
+  namespace: istio-system
+
+  ## Shared egress gateway (one Gateway for all external services)
+  gateway:
+    enabled: false
+    name: platform-egress-gateway
+    serviceNamespace: istio-system    # Namespace where egress gateway pods run
+    selector:
+      istio: egressgateway
+
+  ## External service entries (all use TLS passthrough)
+  services: []
+    # - name: openai
+    #   enabled: true
+    #   namespaces:              # List of namespaces to whitelist this URL in
+    #     - my-namespace         # Creates a ServiceEntry in each namespace
+    #     - another-namespace
+    #   ## OR use singular 'namespace' for a single namespace (backward compatible):
+    #   # namespace: my-namespace
+    #   host: api.openai.com
+    #   port: 443
+    #   resolution: DNS        # DNS | STATIC | NONE
+    #   location: MESH_EXTERNAL  # MESH_EXTERNAL | MESH_INTERNAL
+    #   ## Optional: additional ports
+    #   additionalPorts: []
+    #   ## Optional: TLS origination (for HTTP port 80 services)
+    #   ## When set, egress gateway originates TLS to the external host
+    #   tls:
+    #     mode: SIMPLE         # SIMPLE | MUTUAL | ISTIO_MUTUAL
+    #     sni: example.com     # optional: override SNI host

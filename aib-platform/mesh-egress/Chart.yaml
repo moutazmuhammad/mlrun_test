@@ -1,0 +1,5 @@
+apiVersion: v2
+name: mesh-egress
+description: Istio egress resources - ServiceEntry and optional egress gateway routing
+version: 1.0.0
+appVersion: "1.0.0"

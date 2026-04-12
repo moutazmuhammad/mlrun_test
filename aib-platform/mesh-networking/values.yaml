@@ -1,0 +1,82 @@
+meshNetworking:
+  ## Namespace where CRs are created (Gateway, VirtualService, DestinationRule)
+  namespace: istio-system
+
+  ## Base domain — all services become <subdomain>.<domain>
+  domain: "aib.vodafone.com"
+
+  ## Gateway configuration
+  gateway:
+    enabled: true
+    name: platform-gateway
+    selector:
+      istio: ingressgateway
+    port:
+      number: 80
+      name: http
+      protocol: HTTP
+    ## Optional TLS
+    # tls:
+    #   mode: SIMPLE
+    #   credentialName: platform-tls
+
+  ## Services - generates VirtualService + DestinationRule per entry
+  services: []
+  #   - name: model-api
+  #     subdomain: model-api      # optional, defaults to .name
+  #     serviceNamespace: my-namespace  # namespace where the K8s Service runs
+  #     port: 8080
+  #     ## Path-based routing (optional)
+  #     pathPrefix: /predict
+  #     ## Additional match conditions (optional)
+  #     headers: {}
+  #     ## Retry policy (optional)
+  #     retries:
+  #       attempts: 3
+  #       perTryTimeout: 2s
+  #       retryOn: 5xx
+  #     ## Timeout (optional)
+  #     timeout: 10s
+  #     ## Fault injection for testing (optional)
+  #     fault:
+  #       delay:
+  #         percentage: 10        # % of requests to delay
+  #         fixedDelay: 5s
+  #       abort:
+  #         percentage: 5         # % of requests to abort
+  #         httpStatus: 503
+  #     ## CORS policy (optional)
+  #     corsPolicy:
+  #       allowOrigins:
+  #         - exact: "https://app.aib.vodafone.com"
+  #       allowMethods: ["GET", "POST", "PUT"]
+  #       allowHeaders: ["Authorization", "Content-Type"]
+  #       maxAge: "24h"
+  #     ## Traffic mirroring / shadowing (optional)
+  #     mirror:
+  #       host: model-api-shadow.my-namespace.svc.cluster.local
+  #       port: 8080
+  #       percentage: 50
+  #     ## Weighted routing / canary (optional — overrides default route)
+  #     weightedRouting:
+  #       - host: model-api.my-namespace.svc.cluster.local
+  #         port: 8080
+  #         subset: stable
+  #         weight: 90
+  #       - host: model-api.my-namespace.svc.cluster.local
+  #         port: 8080
+  #         subset: canary
+  #         weight: 10
+  #     ## Traffic policy for DestinationRule (optional)
+  #     trafficPolicy:
+  #       loadBalancer: ROUND_ROBIN
+  #       connectionPool:
+  #         tcp:
+  #           maxConnections: 100
+  #         http:
+  #           h2UpgradePolicy: DEFAULT
+  #           maxRequestsPerConnection: 100
+  #       outlierDetection:
+  #         consecutive5xxErrors: 5
+  #         interval: 30s
+  #         baseEjectionTime: 30s

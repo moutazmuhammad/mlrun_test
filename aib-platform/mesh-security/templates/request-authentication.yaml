@@ -1,0 +1,31 @@
+{{- range .Values.meshSecurity.requestAuthentication }}
+---
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "mesh-security.labels" $ | nindent 4 }}
+spec:
+  {{- if .selector }}
+  selector:
+    matchLabels:
+      {{- toYaml .selector | nindent 6 }}
+  {{- end }}
+  jwtRules:
+    {{- range .jwtRules }}
+    - issuer: {{ .issuer | quote }}
+      jwksUri: {{ .jwksUri | quote }}
+      {{- if .audiences }}
+      audiences:
+        {{- toYaml .audiences | nindent 8 }}
+      {{- end }}
+      {{- if .forwardOriginalToken }}
+      forwardOriginalToken: {{ .forwardOriginalToken }}
+      {{- end }}
+      {{- if .outputPayloadToHeader }}
+      outputPayloadToHeader: {{ .outputPayloadToHeader | quote }}
+      {{- end }}
+    {{- end }}
+{{- end }}

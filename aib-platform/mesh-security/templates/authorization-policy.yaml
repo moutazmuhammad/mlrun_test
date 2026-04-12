@@ -1,0 +1,114 @@
+{{- range .Values.meshSecurity.authorizationPolicies }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "mesh-security.labels" $ | nindent 4 }}
+spec:
+  {{- if .selector }}
+  selector:
+    matchLabels:
+      {{- toYaml .selector | nindent 6 }}
+  {{- end }}
+  action: {{ .action | default "ALLOW" }}
+  {{- if .provider }}
+  provider:
+    name: {{ .provider }}
+  {{- end }}
+  rules:
+    {{- range .rules }}
+    - {{- if .from }}
+      from:
+        {{- range .from }}
+        - source:
+            {{- if .namespaces }}
+            namespaces:
+              {{- toYaml .namespaces | nindent 14 }}
+            {{- end }}
+            {{- if .notNamespaces }}
+            notNamespaces:
+              {{- toYaml .notNamespaces | nindent 14 }}
+            {{- end }}
+            {{- if .principals }}
+            principals:
+              {{- toYaml .principals | nindent 14 }}
+            {{- end }}
+            {{- if .notPrincipals }}
+            notPrincipals:
+              {{- toYaml .notPrincipals | nindent 14 }}
+            {{- end }}
+            {{- if .requestPrincipals }}
+            requestPrincipals:
+              {{- toYaml .requestPrincipals | nindent 14 }}
+            {{- end }}
+            {{- if .notRequestPrincipals }}
+            notRequestPrincipals:
+              {{- toYaml .notRequestPrincipals | nindent 14 }}
+            {{- end }}
+            {{- if .ipBlocks }}
+            ipBlocks:
+              {{- toYaml .ipBlocks | nindent 14 }}
+            {{- end }}
+            {{- if .notIpBlocks }}
+            notIpBlocks:
+              {{- toYaml .notIpBlocks | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- if .to }}
+      to:
+        {{- range .to }}
+        - operation:
+            {{- if .ports }}
+            ports:
+              {{- toYaml .ports | nindent 14 }}
+            {{- end }}
+            {{- if .notPorts }}
+            notPorts:
+              {{- toYaml .notPorts | nindent 14 }}
+            {{- end }}
+            {{- if .methods }}
+            methods:
+              {{- toYaml .methods | nindent 14 }}
+            {{- end }}
+            {{- if .notMethods }}
+            notMethods:
+              {{- toYaml .notMethods | nindent 14 }}
+            {{- end }}
+            {{- if .paths }}
+            paths:
+              {{- toYaml .paths | nindent 14 }}
+            {{- end }}
+            {{- if .notPaths }}
+            notPaths:
+              {{- toYaml .notPaths | nindent 14 }}
+            {{- end }}
+            {{- if .hosts }}
+            hosts:
+              {{- toYaml .hosts | nindent 14 }}
+            {{- end }}
+            {{- if .notHosts }}
+            notHosts:
+              {{- toYaml .notHosts | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- if .when }}
+      when:
+        {{- range .when }}
+        - key: {{ .key }}
+          {{- if .values }}
+          values:
+            {{- toYaml .values | nindent 12 }}
+          {{- end }}
+          {{- if .notValues }}
+          notValues:
+            {{- toYaml .notValues | nindent 12 }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+{{- end }}

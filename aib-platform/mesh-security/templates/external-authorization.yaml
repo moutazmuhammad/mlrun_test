@@ -1,0 +1,69 @@
+{{- range .Values.meshSecurity.externalAuthorization }}
+{{- if .enabled }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "mesh-security.labels" $ | nindent 4 }}
+spec:
+  {{- if .selector }}
+  selector:
+    matchLabels:
+      {{- toYaml .selector | nindent 6 }}
+  {{- end }}
+  action: CUSTOM
+  provider:
+    name: {{ .provider }}
+  {{- if .rules }}
+  rules:
+    {{- range .rules }}
+    - {{- if .to }}
+      to:
+        {{- range .to }}
+        - operation:
+            {{- if .ports }}
+            ports:
+              {{- toYaml .ports | nindent 14 }}
+            {{- end }}
+            {{- if .methods }}
+            methods:
+              {{- toYaml .methods | nindent 14 }}
+            {{- end }}
+            {{- if .paths }}
+            paths:
+              {{- toYaml .paths | nindent 14 }}
+            {{- end }}
+            {{- if .notPaths }}
+            notPaths:
+              {{- toYaml .notPaths | nindent 14 }}
+            {{- end }}
+            {{- if .hosts }}
+            hosts:
+              {{- toYaml .hosts | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- if .when }}
+      when:
+        {{- range .when }}
+        - key: {{ .key }}
+          {{- if .values }}
+          values:
+            {{- toYaml .values | nindent 12 }}
+          {{- end }}
+          {{- if .notValues }}
+          notValues:
+            {{- toYaml .notValues | nindent 12 }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+  {{- else }}
+  rules:
+    - {}
+  {{- end }}
+{{- end }}
+{{- end }}

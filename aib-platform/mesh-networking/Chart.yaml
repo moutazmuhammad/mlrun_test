@@ -1,0 +1,5 @@
+apiVersion: v2
+name: mesh-networking
+description: Istio networking resources - Gateway, VirtualService, DestinationRule
+version: 1.0.0
+appVersion: "1.0.0"

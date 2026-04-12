@@ -1,0 +1,106 @@
+## AI Platform - Umbrella values
+## Override subchart values by prefixing with the subchart name.
+
+mesh-security:
+  meshSecurity:
+    mtls:
+      enabled: true
+      mode: STRICT
+      namespaces: []
+
+    authorizationPolicies: []
+    #   - name: model-api
+    #     namespace: my-namespace
+    #     action: ALLOW
+    #     selector:
+    #       app: model-api
+    #     rules:
+    #       - from:
+    #           - namespaces:
+    #               - my-namespace
+
+    ## Extension providers (generates reference ConfigMap for Istio meshConfig)
+    extensionProviders: []
+    #   - name: oauth2-proxy
+    #     enabled: true
+    #     namespace: istio-system
+    #     service: "oauth2-proxy.oauth2-proxy.svc.cluster.local"
+    #     port: 4180
+    #     includeRequestHeadersInCheck: [authorization, cookie]
+    #     headersToUpstreamOnAllow: [authorization, path, x-auth-request-user, x-auth-request-email, x-auth-request-access-token]
+    #     headersToDownstreamOnAllow: [set-cookie]
+    #     headersToDownstreamOnDeny: [content-type, set-cookie]
+
+    ## External authorization policies (per-service, not all apps)
+    externalAuthorization: []
+    #   - name: ext-authz-app1
+    #     enabled: true
+    #     namespace: my-namespace
+    #     provider: oauth2-proxy     # must match extensionProvider name above
+    #     selector:
+    #       app: my-app              # only this app goes through ext authz
+    #     rules: []                  # empty = all requests; or specify paths/methods
+
+    requestAuthentication: []
+    #   - name: jwt-auth
+    #     namespace: my-namespace
+    #     selector:
+    #       app: model-api
+    #     jwtRules:
+    #       - issuer: "https://auth.aib.vodafone.com"
+    #         jwksUri: "https://auth.aib.vodafone.com/.well-known/jwks.json"
+
+    rateLimiting: []
+    #   - name: ai-ns-ratelimit
+    #     namespace: ai-namespace
+    #     maxTokens: 100
+    #     tokensPerFill: 50
+    #     fillInterval: "60s"
+
+mesh-networking:
+  meshNetworking:
+    namespace: istio-system
+    domain: "aib.vodafone.com"
+
+    gateway:
+      enabled: true
+      name: platform-gateway
+      selector:
+        istio: ingressgateway
+      port:
+        number: 80
+        name: http
+        protocol: HTTP
+
+    services: []
+    #   - name: model-api
+    #     subdomain: model-api    # optional, defaults to .name
+    #     serviceNamespace: my-namespace  # namespace where the K8s Service runs
+    #     port: 8080
+    #     pathPrefix: /predict
+    #     retries:
+    #       attempts: 3
+    #       perTryTimeout: 2s
+
+mesh-egress:
+  meshEgress:
+    namespace: istio-system
+    gateway:
+      enabled: false
+      name: platform-egress-gateway
+      serviceNamespace: istio-system
+      selector:
+        istio: egressgateway
+
+    services: []
+    #   - name: openai
+    #     enabled: true
+    #     namespace: my-namespace
+    #     host: api.openai.com
+    #     port: 443
+    #     resolution: DNS
+    #     location: MESH_EXTERNAL
+    #     # additionalPorts: []
+    #     # tls:
+    #     #   mode: SIMPLE
+    #     #   sni: api.openai.com

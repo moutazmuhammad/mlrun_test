@@ -1,0 +1,25 @@
+service:
+  type: ClusterIP
+  ports:
+    - name: status-port
+      port: 15021
+      protocol: TCP
+      targetPort: 15021
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 443
+labels:
+  istio: egressgateway
+replicaCount: 1
+autoscaling:
+  enabled: false
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+podDisruptionBudget:
+  minAvailable: 1

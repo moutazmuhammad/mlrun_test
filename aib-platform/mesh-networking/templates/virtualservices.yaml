@@ -1,0 +1,83 @@
+{{- range .Values.meshNetworking.services }}
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ .name }}-vs
+  namespace: {{ $.Values.meshNetworking.namespace }}
+  labels:
+    {{- include "mesh-networking.labels" $ | nindent 4 }}
+spec:
+  hosts:
+    - "{{ .subdomain | default .name }}.{{ $.Values.meshNetworking.domain }}"
+  gateways:
+    - {{ $.Values.meshNetworking.namespace }}/{{ $.Values.meshNetworking.gateway.name }}
+  http:
+    - {{- if or .pathPrefix .headers }}
+      match:
+        - {{- if .pathPrefix }}
+          uri:
+            prefix: {{ .pathPrefix | quote }}
+          {{- end }}
+          {{- if .headers }}
+          headers:
+            {{- toYaml .headers | nindent 12 }}
+          {{- end }}
+      {{- end }}
+      route:
+        {{- if .weightedRouting }}
+        {{- range .weightedRouting }}
+        - destination:
+            host: {{ .host }}
+            {{- if .subset }}
+            subset: {{ .subset }}
+            {{- end }}
+            port:
+              number: {{ .port }}
+          weight: {{ .weight }}
+        {{- end }}
+        {{- else }}
+        - destination:
+            host: {{ .name }}.{{ .serviceNamespace | default "default" }}.svc.cluster.local
+            port:
+              number: {{ .port }}
+        {{- end }}
+      {{- if .retries }}
+      retries:
+        attempts: {{ .retries.attempts | default 3 }}
+        perTryTimeout: {{ .retries.perTryTimeout | default "2s" }}
+        {{- if .retries.retryOn }}
+        retryOn: {{ .retries.retryOn }}
+        {{- end }}
+      {{- end }}
+      {{- if .timeout }}
+      timeout: {{ .timeout }}
+      {{- end }}
+      {{- if .fault }}
+      fault:
+        {{- if .fault.delay }}
+        delay:
+          percentage:
+            value: {{ .fault.delay.percentage }}
+          fixedDelay: {{ .fault.delay.fixedDelay }}
+        {{- end }}
+        {{- if .fault.abort }}
+        abort:
+          percentage:
+            value: {{ .fault.abort.percentage }}
+          httpStatus: {{ .fault.abort.httpStatus }}
+        {{- end }}
+      {{- end }}
+      {{- if .corsPolicy }}
+      corsPolicy:
+        {{- toYaml .corsPolicy | nindent 8 }}
+      {{- end }}
+      {{- if .mirror }}
+      mirror:
+        host: {{ .mirror.host }}
+        port:
+          number: {{ .mirror.port }}
+      mirrorPercentage:
+        value: {{ .mirror.percentage | default 100.0 }}
+      {{- end }}
+{{- end }}

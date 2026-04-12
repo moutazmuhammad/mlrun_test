@@ -1,0 +1,24 @@
+{{- if .Values.meshSecurity.mtls.enabled }}
+{{- range .Values.meshSecurity.mtls.namespaces }}
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ .name }}-mtls
+  namespace: {{ .name }}
+  labels:
+    {{- include "mesh-security.labels" $ | nindent 4 }}
+spec:
+  {{- if .selector }}
+  selector:
+    matchLabels:
+      {{- toYaml .selector | nindent 6 }}
+  {{- end }}
+  mtls:
+    mode: {{ .mode | default $.Values.meshSecurity.mtls.mode }}
+  {{- if .portLevelMtls }}
+  portLevelMtls:
+    {{- toYaml .portLevelMtls | nindent 6 }}
+  {{- end }}
+{{- end }}
+{{- end }}

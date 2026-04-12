@@ -1,0 +1,23 @@
+{{- if .Values.meshNetworking.gateway.enabled }}
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Values.meshNetworking.gateway.name }}
+  namespace: {{ .Values.meshNetworking.namespace }}
+  labels:
+    {{- include "mesh-networking.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- toYaml .Values.meshNetworking.gateway.selector | nindent 4 }}
+  servers:
+    - port:
+        number: {{ .Values.meshNetworking.gateway.port.number }}
+        name: {{ .Values.meshNetworking.gateway.port.name }}
+        protocol: {{ .Values.meshNetworking.gateway.port.protocol }}
+      hosts:
+        - "*.{{ .Values.meshNetworking.domain }}"
+      {{- if .Values.meshNetworking.gateway.tls }}
+      tls:
+        {{- toYaml .Values.meshNetworking.gateway.tls | nindent 8 }}
+      {{- end }}
+{{- end }}

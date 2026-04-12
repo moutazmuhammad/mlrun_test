@@ -1,0 +1,213 @@
+## Dev environment - AI Platform mesh configuration
+
+## ──────────────────────────────────────────────
+## 1. mesh-security
+## ──────────────────────────────────────────────
+mesh-security:
+  meshSecurity:
+    mtls:
+      enabled: true
+      mode: STRICT
+      namespaces:
+        - name: aib-system
+        - name: aib-serving
+
+    authorizationPolicies:
+      - name: allow-argocd
+        namespace: argocd
+        action: ALLOW
+        selector:
+          app: argocd-server
+        rules:
+          - from:
+              - namespaces:
+                  - aib-platform
+                  - argocd
+
+      - name: allow-mlrun-internal
+        namespace: aib-system
+        action: ALLOW
+        selector:
+          app: mlrun-api
+        rules:
+          - from:
+              - namespaces:
+                  - aib-system
+                  - aib-serving
+                  - aib-platform
+
+      - name: allow-mlrun-ui
+        namespace: aib-system
+        action: ALLOW
+        selector:
+          app: mlrun-ui
+        rules:
+          - from:
+              - namespaces:
+                  - aib-system
+                  - istio-system
+
+      - name: allow-jupyter
+        namespace: aib-system
+        action: ALLOW
+        selector:
+          app: jupyter-notebook
+        rules:
+          - from:
+              - namespaces:
+                  - aib-system
+                  - istio-system
+
+      - name: allow-nuclio
+        namespace: aib-system
+        action: ALLOW
+        selector:
+          app: nuclio-dashboard
+        rules:
+          - from:
+              - namespaces:
+                  - aib-system
+                  - istio-system
+
+      - name: allow-pipeline-ui
+        namespace: aib-system
+        action: ALLOW
+        selector:
+          app: ml-pipeline-ui
+        rules:
+          - from:
+              - namespaces:
+                  - aib-system
+                  - istio-system
+
+      - name: allow-nuclio-functions
+        namespace: aib-serving
+        action: ALLOW
+        rules:
+          - from:
+              - namespaces:
+                  - aib-system
+                  - aib-serving
+                  - istio-system
+
+    requestAuthentication: []
+
+    rateLimiting:
+      - name: mlrun-ratelimit
+        namespace: aib-system
+        selector:
+          app: mlrun-api
+        maxTokens: 100
+        tokensPerFill: 50
+        fillInterval: "60s"
+
+## ──────────────────────────────────────────────
+## 2. mesh-networking
+## ──────────────────────────────────────────────
+mesh-networking:
+  meshNetworking:
+    namespace: aib-platform
+    domain: "dev.plus.aib.vodafone.com"
+
+    gateway:
+      enabled: true
+      name: platform-gateway
+      selector:
+        istio: ingressgateway
+      port:
+        number: 80
+        name: http
+        protocol: HTTP
+
+    services:
+      # - name: argocd-server
+      #   subdomain: argocd
+      #   serviceNamespace: argocd
+      #   port: 80
+
+      # - name: mlrun-api
+      #   subdomain: mlrun-api
+      #   serviceNamespace: aib-system
+      #   port: 8080
+      #   pathPrefix: /api
+      #   timeout: 10s
+      #   retries:
+      #     attempts: 3
+      #     perTryTimeout: 2s
+      #     retryOn: 5xx
+
+      - name: mlrun-ui
+        subdomain: mlrun
+        serviceNamespace: aib-system
+        port: 80
+        timeout: 30s
+
+      - name: jupyter
+        subdomain: jupyter
+        serviceNamespace: aib-system
+        port: 8888
+        timeout: 60s
+
+      - name: nuclio
+        subdomain: nuclio
+        serviceNamespace: aib-system
+        port: 8070
+        timeout: 30s
+
+      - name: ml-pipeline-ui
+        subdomain: pipelines
+        serviceNamespace: aib-system
+        port: 80
+
+## ──────────────────────────────────────────────
+## 3. mesh-egress
+## ──────────────────────────────────────────────
+mesh-egress:
+  meshEgress:
+    namespace: aib-platform
+    gateway:
+      enabled: false
+      name: platform-egress-gateway
+      serviceNamespace: istio-system
+      selector:
+        istio: egressgateway
+
+    services: []
+      # - name: google
+      #   enabled: true
+      #   namespaces:
+      #     - argocd
+      #   host: google.com
+      #   port: 443
+      #   resolution: DNS
+      #   location: MESH_EXTERNAL
+
+      # - name: quay-io
+      #   enabled: true
+      #   namespaces:
+      #     - aib-system
+      #     - aib-serving
+      #   host: quay.io
+      #   port: 443
+      #   resolution: DNS
+      #   location: MESH_EXTERNAL
+
+      # - name: docker-io
+      #   enabled: true
+      #   namespaces:
+      #     - aib-system
+      #     - aib-serving
+      #   host: registry-1.docker.io
+      #   port: 443
+      #   resolution: DNS
+      #   location: MESH_EXTERNAL
+
+      # - name: ghcr-io
+      #   enabled: true
+      #   namespaces:
+      #     - aib-system
+      #     - aib-serving
+      #   host: ghcr.io
+      #   port: 443
+      #   resolution: DNS
+      #   location: MESH_EXTERNAL

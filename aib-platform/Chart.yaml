@@ -1,0 +1,15 @@
+apiVersion: v2
+name: aib-platform
+description: Umbrella chart for AI platform Istio mesh configuration
+version: 1.0.0
+appVersion: "1.0.0"
+dependencies:
+  - name: mesh-security
+    version: 1.0.0
+    repository: file://mesh-security
+  - name: mesh-networking
+    version: 1.0.0
+    repository: file://mesh-networking
+  - name: mesh-egress
+    version: 1.0.0
+    repository: file://mesh-egress

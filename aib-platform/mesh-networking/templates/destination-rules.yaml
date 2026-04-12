@@ -1,0 +1,31 @@
+{{- range .Values.meshNetworking.services }}
+{{- if .trafficPolicy }}
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ .name }}-dr
+  namespace: {{ .serviceNamespace | default "default" }}
+  labels:
+    {{- include "mesh-networking.labels" $ | nindent 4 }}
+spec:
+  host: {{ .name }}.{{ .serviceNamespace | default "default" }}.svc.cluster.local
+  trafficPolicy:
+    {{- if .trafficPolicy.loadBalancer }}
+    loadBalancer:
+      simple: {{ .trafficPolicy.loadBalancer }}
+    {{- end }}
+    {{- if .trafficPolicy.connectionPool }}
+    connectionPool:
+      {{- toYaml .trafficPolicy.connectionPool | nindent 6 }}
+    {{- end }}
+    {{- if .trafficPolicy.outlierDetection }}
+    outlierDetection:
+      {{- toYaml .trafficPolicy.outlierDetection | nindent 6 }}
+    {{- end }}
+    {{- if .trafficPolicy.tls }}
+    tls:
+      {{- toYaml .trafficPolicy.tls | nindent 6 }}
+    {{- end }}
+{{- end }}
+{{- end }}

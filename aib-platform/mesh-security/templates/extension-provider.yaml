@@ -1,0 +1,52 @@
+{{- if .Values.meshSecurity.extensionProviders }}
+{{- range .Values.meshSecurity.extensionProviders }}
+{{- if .enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio-mesh-config-{{ .name }}
+  namespace: {{ .namespace | default "istio-system" }}
+  labels:
+    {{- include "mesh-security.labels" $ | nindent 4 }}
+  annotations:
+    configmap.purpose: "Merge this into istio ConfigMap mesh key or IstioOperator meshConfig"
+data:
+  extension-provider.yaml: |
+    extensionProviders:
+      - name: {{ .name | quote }}
+        envoyExtAuthzHttp:
+          service: {{ .service | quote }}
+          port: {{ .port | quote }}
+          {{- if .includeRequestHeadersInCheck }}
+          includeRequestHeadersInCheck:
+            {{- toYaml .includeRequestHeadersInCheck | nindent 12 }}
+          {{- end }}
+          {{- if .headersToUpstreamOnAllow }}
+          headersToUpstreamOnAllow:
+            {{- toYaml .headersToUpstreamOnAllow | nindent 12 }}
+          {{- end }}
+          {{- if .headersToDownstreamOnAllow }}
+          headersToDownstreamOnAllow:
+            {{- toYaml .headersToDownstreamOnAllow | nindent 12 }}
+          {{- end }}
+          {{- if .headersToDownstreamOnDeny }}
+          headersToDownstreamOnDeny:
+            {{- toYaml .headersToDownstreamOnDeny | nindent 12 }}
+          {{- end }}
+          {{- if .includeAdditionalHeadersInCheck }}
+          includeAdditionalHeadersInCheck:
+            {{- toYaml .includeAdditionalHeadersInCheck | nindent 12 }}
+          {{- end }}
+          {{- if .pathPrefix }}
+          pathPrefix: {{ .pathPrefix | quote }}
+          {{- end }}
+          {{- if .statusOnError }}
+          statusOnError: {{ .statusOnError | quote }}
+          {{- end }}
+          {{- if .failOpen }}
+          failOpen: {{ .failOpen }}
+          {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

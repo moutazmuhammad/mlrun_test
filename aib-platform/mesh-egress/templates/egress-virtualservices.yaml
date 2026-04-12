@@ -1,0 +1,69 @@
+{{- if and .Values.meshEgress.gateway .Values.meshEgress.gateway.enabled }}
+{{- range .Values.meshEgress.services }}
+{{- if .enabled }}
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ .name }}-egress-vs
+  namespace: {{ $.Values.meshEgress.namespace | default "istio-system" }}
+  labels:
+    {{- include "mesh-egress.labels" $ | nindent 4 }}
+spec:
+  hosts:
+    - {{ .host }}
+  gateways:
+    - mesh
+    - {{ $.Values.meshEgress.gateway.name | default "platform-egress-gateway" }}
+  {{- if and .tls .tls.mode }}
+  ## HTTP routes — traffic is HTTP internally, TLS origination happens via DestinationRule
+  http:
+    - match:
+        - gateways:
+            - mesh
+          port: {{ .port }}
+      route:
+        - destination:
+            host: istio-egressgateway.{{ $.Values.meshEgress.gateway.serviceNamespace | default "istio-system" }}.svc.cluster.local
+            subset: {{ .name }}
+            port:
+              number: {{ .port }}
+    - match:
+        - gateways:
+            - {{ $.Values.meshEgress.gateway.name | default "platform-egress-gateway" }}
+          port: {{ .port }}
+      route:
+        - destination:
+            host: {{ .host }}
+            port:
+              number: {{ .port }}
+  {{- else }}
+  ## TLS routes — passthrough based on SNI
+  tls:
+    - match:
+        - gateways:
+            - mesh
+          port: {{ .port }}
+          sniHosts:
+            - {{ .host }}
+      route:
+        - destination:
+            host: istio-egressgateway.{{ $.Values.meshEgress.gateway.serviceNamespace | default "istio-system" }}.svc.cluster.local
+            subset: {{ .name }}
+            port:
+              number: {{ .port }}
+    - match:
+        - gateways:
+            - {{ $.Values.meshEgress.gateway.name | default "platform-egress-gateway" }}
+          port: {{ .port }}
+          sniHosts:
+            - {{ .host }}
+      route:
+        - destination:
+            host: {{ .host }}
+            port:
+              number: {{ .port }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

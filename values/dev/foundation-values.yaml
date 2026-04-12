@@ -1,0 +1,28 @@
+## Dev environment - Foundation namespace overrides
+
+namespaces:
+  # Istio base + istiod
+  - name: istio-system
+    labels:
+      app.kubernetes.io/part-of: cloud-platform
+      platform/component: istio
+
+  # MLRun workloads
+  - name: aib-system
+    labels:
+      app.kubernetes.io/part-of: cloud-platform
+      platform/component: mlrun
+      istio-injection: enabled
+
+  # Nuclio serverless functions
+  - name: aib-serving
+    labels:
+      app.kubernetes.io/part-of: cloud-platform
+      platform/component: nuclio-functions
+      istio-injection: enabled
+
+  # Istio CRs (Gateways, VirtualServices, etc.)
+  - name: aib-platform
+    labels:
+      app.kubernetes.io/part-of: cloud-platform
+      platform/component: mesh-config

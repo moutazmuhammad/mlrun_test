@@ -1,0 +1,41 @@
+{{- range .Values.meshEgress.services }}
+{{- if .enabled }}
+{{- $service := . }}
+{{- $namespaces := list }}
+{{- if .namespaces }}
+  {{- $namespaces = .namespaces }}
+{{- else }}
+  {{- $namespaces = list (.namespace | default $.Values.meshEgress.namespace | default "istio-system") }}
+{{- end }}
+{{- range $ns := $namespaces }}
+---
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: {{ $service.name }}-se
+  namespace: {{ $ns }}
+  labels:
+    {{- include "mesh-egress.labels" $ | nindent 4 }}
+spec:
+  hosts:
+    - {{ $service.host }}
+  location: {{ $service.location | default "MESH_EXTERNAL" }}
+  ports:
+    {{- if and $service.tls $service.tls.mode }}
+    - number: {{ $service.port }}
+      name: http
+      protocol: HTTP
+    {{- else }}
+    - number: {{ $service.port }}
+      name: tls
+      protocol: TLS
+    {{- end }}
+    {{- range $service.additionalPorts }}
+    - number: {{ .port }}
+      name: {{ .name }}
+      protocol: {{ .protocol }}
+    {{- end }}
+  resolution: {{ $service.resolution | default "DNS" }}
+{{- end }}
+{{- end }}
+{{- end }}

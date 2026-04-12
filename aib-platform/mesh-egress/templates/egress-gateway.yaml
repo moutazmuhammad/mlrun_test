@@ -1,0 +1,36 @@
+{{- if and .Values.meshEgress.gateway .Values.meshEgress.gateway.enabled }}
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Values.meshEgress.gateway.name | default "platform-egress-gateway" }}
+  namespace: {{ .Values.meshEgress.namespace | default "istio-system" }}
+  labels:
+    {{- include "mesh-egress.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- toYaml .Values.meshEgress.gateway.selector | nindent 4 }}
+  servers:
+    {{- range .Values.meshEgress.services }}
+    {{- if .enabled }}
+    {{- if and .tls .tls.mode }}
+    ## TLS origination — accept HTTP from mesh, originate TLS to external
+    - port:
+        number: {{ .port }}
+        name: {{ .name }}-http
+        protocol: HTTP
+      hosts:
+        - {{ .host }}
+    {{- else }}
+    ## TLS passthrough — forward encrypted traffic as-is
+    - port:
+        number: {{ .port }}
+        name: {{ .name }}-tls
+        protocol: TLS
+      hosts:
+        - {{ .host }}
+      tls:
+        mode: PASSTHROUGH
+    {{- end }}
+    {{- end }}
+    {{- end }}
+{{- end }}
